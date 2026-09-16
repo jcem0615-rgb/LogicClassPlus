@@ -1,0 +1,24 @@
+{
+  "name": "logicclass-plus",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LogicClass+ — international English & Math tutoring platform",
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,pwa -c green,cyan \"npm run -w apps/server dev\" \"npm run -w apps/pwa dev\"",
+    "build": "npm run -w apps/server build",
+    "start": "npm run -w apps/server start",
+    "seed": "npm run -w apps/server seed",
+    "migrate": "npm run -w apps/server prisma:migrate",
+    "typecheck": "npm run -w apps/server typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0",
+    "socket.io-client": "^4.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

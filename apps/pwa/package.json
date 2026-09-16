@@ -1,0 +1,10 @@
+{
+  "name": "@logicclass/pwa",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LogicClass+ PWA client — static, no build step",
+  "scripts": {
+    "dev": "npx --yes serve . -l 4000 --no-clipboard",
+    "start": "npx --yes serve . -l 4000 --no-clipboard"
+  }
+}

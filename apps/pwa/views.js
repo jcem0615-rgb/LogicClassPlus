@@ -364,8 +364,11 @@
       out += '</div>';
 
       if (u.role === 'teacher') {
-        out += '<div class="flag info"><b>Isolation</b><div>Every query on this screen filters by your teacher ID. ' +
-          'Another teacher signing in cannot list, open or link to these files even with the folder ID.</div></div>';
+        out += '<div class="flag info"><b>Isolation</b><div>Every query filters by your teacher ID. ' +
+          (LC.data.isRemote()
+            ? 'The server enforces it: another teacher requesting this folder by ID gets the same 404 as one that does not exist.'
+            : 'Connect the server to see it enforced server-side rather than in the browser.') +
+          '</div></div>';
       }
       return out;
     }
@@ -696,6 +699,24 @@
         '<div class="row" style="justify-content:flex-end"><button class="btn btn-primary" type="submit">Save profile</button></div>' +
         '</form></section>';
 
+      var remote = LC.data.isRemote();
+      out += '<section class="card"><div class="card-head"><h2>Server</h2>' +
+        (remote ? '<span class="pill pill-ok"><i class="dot"></i>Connected</span>'
+                : '<span class="pill pill-warn"><i class="dot"></i>Demo data</span>') +
+        '</div><div class="card-body stack">' +
+        (remote
+          ? '<div class="row-between"><div><div style="font-weight:600">PostgreSQL via the API</div>' +
+            '<div class="small dim mono">' + esc(LC.api.baseUrl()) + '</div></div>' +
+            '<button class="btn" data-act="disconnect-server">Disconnect</button></div>' +
+            '<p class="small muted">Accounts, classes, attendance and invoices are read and written on the server. ' +
+            'Realtime runs over Socket.io, so a second browser signed in as the other participant shares your classroom.</p>'
+          : '<div class="row-between"><div><div style="font-weight:600">Running on demo data</div>' +
+            '<div class="small dim">Everything is in this browser\'s localStorage. Nothing is shared between devices.</div></div>' +
+            '<button class="btn btn-primary" data-act="connect-server">Connect a server</button></div>' +
+            '<p class="small muted">Start the API with <span class="mono">npm run dev</span> from the repository root, then ' +
+            'point this at <span class="mono">http://localhost:4001</span>.</p>') +
+        '</div></section>';
+
       out += '<section class="card"><div class="card-head"><h2>Notifications &amp; install</h2></div><div class="card-body stack">' +
         '<div class="row-between"><div><div style="font-weight:600">Browser push</div>' +
         '<div class="small dim">Permission: <span class="mono">' + esc(perm) + '</span></div></div>' +
@@ -728,10 +749,14 @@
         '<div class="small dim">Restores the seeded accounts, folders, sessions and invoices. Anything you changed is lost.</div></div>' +
         '<button class="btn btn-danger" data-act="reset-data">Reset demo data</button></div></section>';
 
-      out += '<div class="flag"><b>What this preview is</b><div>This is the LogicClass+ front end running entirely in your browser: ' +
-        'data lives in <span class="mono">localStorage</span>, not Postgres, and there is no Socket.io server behind it. ' +
-        'The classroom uses your real camera, microphone and MediaRecorder; peer-to-peer WebRTC, Stripe, S3 and Web Push need the ' +
-        'Node/Express + Prisma backend from the build handoff.</div></div>';
+      out += remote
+        ? '<div class="flag info"><b>Connected to the API</b><div>Reads and writes go to PostgreSQL through ' +
+          '<span class="mono">apps/server</span>. Stripe, S3 and Web Push each switch on when their keys are present in ' +
+          '<span class="mono">apps/server/.env</span> — the server reports which are configured on ' +
+          '<span class="mono">/api/health</span> and says so plainly rather than faking a result.</div></div>'
+        : '<div class="flag"><b>Demo mode</b><div>The front end is running entirely in your browser: data lives in ' +
+          '<span class="mono">localStorage</span> and there is no Socket.io server behind it, so the classroom peer is ' +
+          'simulated. Your camera, microphone and recorder are real. Connect the server above for the full stack.</div></div>';
       return out;
     }
   };

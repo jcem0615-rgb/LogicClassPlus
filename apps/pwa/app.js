@@ -61,7 +61,7 @@
   /* ============================ render ============================ */
   function render() {
     var root = document.getElementById('root');
-    var user = S.currentUser();
+    var user = LC.data.currentUser();
     clearTimers();
 
     if (!user) { root.innerHTML = authScreen(); mountAuth(); return; }
@@ -273,7 +273,23 @@
     else document.documentElement.setAttribute('data-theme', t);
   }
 
-  /* ============================= actions ============================= */
+  /* ============================= actions =============================
+     Every mutation calls LC.data, which routes to the API when a server
+     is connected and to the local demo store when it is not. */
+
+  /** Runs an operation, re-renders, and turns a rejection into a readable toast. */
+  function run(promise, ok, fail) {
+    return Promise.resolve(promise).then(function (result) {
+      render();
+      if (ok) toast('ok', ok.title, typeof ok.body === 'function' ? ok.body(result) : ok.body);
+      return result;
+    }).catch(function (err) {
+      render();
+      toast('err', (fail && fail.title) || 'That did not work', err.message);
+      throw err;
+    }).catch(function () { /* already reported */ });
+  }
+
   var actions = {
     /* --- auth --- */
     'auth-mode': function (el) { authMode = el.dataset.mode; render(); },
@@ -284,29 +300,37 @@
     },
     'login': function (form, e) {
       e.preventDefault();
-      var r = S.login(document.getElementById('login-email').value, document.getElementById('login-password').value);
-      if (r.error) { authError(r.error); return; }
-      location.hash = '#/dashboard';
-      render();
-      toast('ok', 'Signed in', 'Welcome back, ' + r.user.name.split(' ')[0] + '.');
+      var button = form.querySelector('button[type=submit]');
+      if (button) { button.disabled = true; button.textContent = 'Signing in…'; }
+      LC.data.login(
+        document.getElementById('login-email').value,
+        document.getElementById('login-password').value
+      ).then(function (user) {
+        location.hash = '#/dashboard';
+        render();
+        toast('ok', 'Signed in', 'Welcome back, ' + user.name.split(' ')[0] + '.');
+      }).catch(function (err) {
+        if (button) { button.disabled = false; button.textContent = 'Sign in'; }
+        authError(err.message);
+      });
     },
     'register': function (form, e) {
       e.preventDefault();
-      var r = S.register({
+      LC.data.register({
         name: document.getElementById('reg-name').value,
         email: document.getElementById('reg-email').value,
         password: document.getElementById('reg-password').value,
         role: document.getElementById('reg-role').value,
         subjects: [document.getElementById('reg-subject').value]
-      });
-      if (r.error) { authError(r.error); return; }
-      authMode = 'login';
-      render();
-      modal('Account created — waiting for approval',
-        '<p>Thanks, ' + esc(r.user.name.split(' ')[0]) + '. Your ' + esc(r.user.role) + ' account was created and the administrator ' +
-        'has been notified.</p><p class="muted">Registrations are reviewed before the first sign-in. To see the approval flow ' +
-        'right now, sign in as the Owner (<span class="mono">owner@logicclass.plus / admin1234</span>) and approve yourself from ' +
-        'the dashboard.</p>', '');
+      }).then(function (user) {
+        authMode = 'login';
+        render();
+        modal('Account created — waiting for approval',
+          '<p>Thanks, ' + esc(user.name.split(' ')[0]) + '. Your ' + esc(user.role) + ' account was created and the ' +
+          'administrator has been notified.</p><p class="muted">Registrations are reviewed before the first sign-in. ' +
+          'To see the approval flow now, sign in as the Owner (<span class="mono">owner@logicclass.plus</span>) and ' +
+          'approve the account from the dashboard.</p>', '');
+      }).catch(function (err) { authError(err.message); });
     },
     'forgot': function () {
       modal('Reset your password',
@@ -315,313 +339,275 @@
         '<button class="btn btn-primary" data-act="send-forgot">Send request</button>');
     },
     'send-forgot': function () {
-      var v = document.getElementById('forgot-email').value;
-      S.requestPasswordReset(v);
-      closeModal();
-      toast('ok', 'Request sent', 'If that address has an account, the administrator will review it.');
+      var value = document.getElementById('forgot-email').value;
+      LC.data.requestPasswordReset(value).then(function () {
+        closeModal();
+        toast('ok', 'Request sent', 'If that address has an account, the administrator will review it.');
+      });
     },
-    'logout': function () { S.logout(); bellOpen = false; location.hash = '#/dashboard'; render(); },
+    'logout': function () {
+      LC.data.logout().then(function () {
+        bellOpen = false;
+        location.hash = '#/dashboard';
+        render();
+      });
+    },
 
     /* --- notifications --- */
     'bell': function () { bellOpen = !bellOpen; render(); },
-    'mark-read': function () { var u = S.currentUser(); S.markAllRead(u.id); render(); },
+    'mark-read': function () { run(LC.data.markNotificationsRead()); },
 
     /* --- admin --- */
     'approve-user': function (el) {
-      var id = el.dataset.id;
-      S.commit('user:approve:' + id, function (d) {
-        var u = d.users.find(function (x) { return x.id === id; });
-        if (u) { u.status = 'active'; S.notify(u.id, 'account', 'Your account is approved', 'You can sign in and start using LogicClass+.'); }
-      });
-      toast('ok', 'Approved', S.userById(id).name + ' can sign in now.');
-      render();
+      var name = S.userById(el.dataset.id).name;
+      run(LC.data.approveUser(el.dataset.id), { title: 'Approved', body: name + ' can sign in now.' });
     },
     'reject-user': function (el) {
-      var id = el.dataset.id, name = S.userById(id).name;
-      S.commit('user:reject:' + id, function (d) { d.users = d.users.filter(function (x) { return x.id !== id; }); });
-      toast('warn', 'Registration rejected', name + ' was removed.');
-      render();
+      var name = S.userById(el.dataset.id).name;
+      run(LC.data.rejectUser(el.dataset.id), { title: 'Registration rejected', body: name + ' was removed.' });
     },
-    'toggle-suspend': function (el) {
-      var id = el.dataset.id;
-      S.commit('user:suspend:' + id, function (d) {
-        var u = d.users.find(function (x) { return x.id === id; });
-        if (u) u.status = u.status === 'suspended' ? 'active' : 'suspended';
-      });
-      render();
-    },
+    'toggle-suspend': function (el) { run(LC.data.toggleSuspend(el.dataset.id)); },
     'reset-approve': function (el) {
-      var id = el.dataset.id;
-      S.commit('reset:approve:' + id, function (d) {
-        var r = d.resets.find(function (x) { return x.id === id; });
-        if (r) { r.status = 'approved'; S.notify(r.userId, 'password', 'Reset link sent', 'Check your inbox — the link works once and expires in 30 minutes.'); }
+      run(LC.data.resolveReset(el.dataset.id, 'approve'), {
+        title: 'Link sent', body: 'The account holder was notified.'
       });
-      toast('ok', 'Link sent', 'The account holder was notified.');
-      render();
     },
-    'reset-reject': function (el) {
-      var id = el.dataset.id;
-      S.commit('reset:reject:' + id, function (d) {
-        var r = d.resets.find(function (x) { return x.id === id; });
-        if (r) r.status = 'rejected';
-      });
-      render();
-    },
+    'reset-reject': function (el) { run(LC.data.resolveReset(el.dataset.id, 'reject')); },
 
     /* --- classes --- */
     'create-request': function (form, e) {
       e.preventDefault();
-      var me = S.currentUser();
       var when = document.getElementById('req-when').value;
       var topic = document.getElementById('req-topic').value.trim();
       if (!when || !topic) { toast('err', 'Missing details', 'Pick a time and describe the topic.'); return; }
       if (new Date(when).getTime() < Date.now()) { toast('err', 'That time has passed', 'Choose a slot in the future.'); return; }
       var teacherId = document.getElementById('req-teacher').value;
-      var req = {
-        id: S.uid('req'), studentId: me.id, teacherId: teacherId,
+      run(LC.data.createRequest({
+        teacherId: teacherId,
         subject: document.getElementById('req-subject').value,
-        topic: topic, requestedFor: new Date(when).toISOString(),
+        topic: topic,
+        requestedFor: new Date(when).toISOString(),
         minutes: +document.getElementById('req-minutes').value,
-        status: 'pending', note: document.getElementById('req-note').value.trim(),
-        createdAt: S.iso(Date.now())
-      };
-      S.commit('request:create', function (d) {
-        d.requests.unshift(req);
-        S.notify(teacherId, 'class_request', 'New class request',
-          me.name + ' requested ' + req.subject + ' — ' + req.topic + '.');
-      });
-      form.reset();
-      toast('ok', 'Request sent', S.userById(teacherId).name + ' has been notified.');
-      render();
+        note: document.getElementById('req-note').value.trim() || undefined
+      }), { title: 'Request sent', body: S.userById(teacherId).name + ' has been notified.' })
+        .then(function () { form.reset(); if (LC.views.classes.mount) LC.views.classes.mount(); });
     },
     'accept-request': function (el) {
-      var id = el.dataset.id;
-      S.commit('request:accept:' + id, function (d) {
-        var r = d.requests.find(function (x) { return x.id === id; });
-        if (!r) return;
-        r.status = 'accepted';
-        var ses = {
-          id: S.uid('ses'), requestId: r.id, teacherId: r.teacherId, studentId: r.studentId,
-          subject: r.subject, topic: r.topic, startsAt: r.requestedFor, minutes: r.minutes,
-          status: 'scheduled', recordingUrl: null
-        };
-        d.sessions.push(ses);
-        S.notify(r.studentId, 'session', 'Class accepted',
-          S.userById(r.teacherId).name + ' accepted “' + r.topic + '” for ' + F.dayTime(r.requestedFor) + '.');
+      run(LC.data.decideRequest(el.dataset.id, 'accept'), {
+        title: 'Accepted', body: 'The session is on your schedule and the student was notified.'
       });
-      toast('ok', 'Accepted', 'The session is on your schedule and the student was notified.');
-      render();
     },
     'decline-request': function (el) {
-      var id = el.dataset.id;
-      S.commit('request:decline:' + id, function (d) {
-        var r = d.requests.find(function (x) { return x.id === id; });
-        if (!r) return;
-        r.status = 'declined';
-        S.notify(r.studentId, 'session', 'Class request declined',
-          'Try another time slot, or a different teacher.');
+      run(LC.data.decideRequest(el.dataset.id, 'decline'), {
+        title: 'Declined', body: 'The student was notified.'
       });
-      toast('warn', 'Declined', 'The student was notified.');
-      render();
     },
 
     /* --- library --- */
     'new-folder': function () {
       modal('New folder',
         '<label class="field">Folder name<input type="text" id="fld-name" placeholder="e.g. Trigonometry"></label>' +
-        '<label class="field">Subject<select id="fld-subject"><option value="math">Math</option><option value="english">English</option></select></label>',
+        '<label class="field">Subject<select id="fld-subject"><option value="math">Math</option>' +
+        '<option value="english">English</option></select></label>',
         '<button class="btn btn-primary" data-act="create-folder">Create folder</button>');
     },
     'create-folder': function () {
       var name = document.getElementById('fld-name').value.trim();
       if (!name) { toast('err', 'Name it first', 'A folder needs a name.'); return; }
-      var me = S.currentUser();
-      var id = S.uid('fld');
-      S.commit('folder:create', function (d) {
-        d.folders.push({ id: id, teacherId: me.id, name: name, subject: document.getElementById('fld-subject').value, createdAt: S.iso(Date.now()) });
-      });
-      closeModal();
-      location.hash = '#/library?folder=' + id;
-      render();
-      toast('ok', 'Folder created', name + ' is ready for uploads.');
+      var subject = document.getElementById('fld-subject').value;
+      LC.data.createFolder(name, subject).then(function (folder) {
+        closeModal();
+        location.hash = '#/library?folder=' + folder.id;
+        render();
+        toast('ok', 'Folder created', name + ' is ready for uploads.');
+      }).catch(function (err) { toast('err', 'Could not create the folder', err.message); });
     },
     'upload': function (el) {
       var file = el.files && el.files[0];
       if (!file) return;
-      var v = S.validateUpload(file);
-      if (!v.ok) { toast('err', 'Upload rejected', v.message); el.value = ''; return; }
-      var me = S.currentUser();
-      S.commit('resource:upload', function (d) {
-        d.resources.push({
-          id: S.uid('res'), folderId: el.dataset.folder, teacherId: me.id,
-          name: file.name, ext: v.ext, bytes: file.size, uploadedAt: S.iso(Date.now())
-        });
-      });
+      var folderId = el.dataset.folder;
       el.value = '';
-      toast('ok', 'Uploaded', file.name + ' · ' + F.bytes(file.size) + '. A presigned S3 PUT would carry the bytes.');
-      render();
+      toast('ok', 'Uploading', file.name + ' · ' + F.bytes(file.size));
+      run(LC.data.uploadFile(folderId, file), {
+        title: 'Uploaded',
+        body: file.name + ' · ' + F.bytes(file.size) + (LC.data.isRemote() ? '' : ' (demo mode — nothing left this browser)')
+      }, { title: 'Upload rejected' });
     },
-    'delete-resource': function (el) {
-      var id = el.dataset.id;
-      S.commit('resource:delete:' + id, function (d) { d.resources = d.resources.filter(function (r) { return r.id !== id; }); });
-      render();
-    },
+    'delete-resource': function (el) { run(LC.data.deleteResource(el.dataset.id)); },
     'open-resource': function (el) {
       var r = S.db.resources.find(function (x) { return x.id === el.dataset.id; });
-      var board = S.db.boards[Object.keys(S.db.boards)[0]];
-      modal(r.name,
-        (r.ext === 'jpg' && board ? '<img src="' + board + '" alt="' + esc(r.name) + '" style="width:100%;border-radius:8px">' : '') +
-        '<div class="panel stack"><div class="row-between"><span class="muted">Type</span><span class="mono">.' + esc(r.ext) + '</span></div>' +
-        '<div class="row-between"><span class="muted">Size</span><span class="mono">' + F.bytes(r.bytes) + '</span></div>' +
-        '<div class="row-between"><span class="muted">Uploaded</span><span class="mono">' + F.dayTime(r.uploadedAt) + '</span></div>' +
-        '<div class="row-between"><span class="muted">Teacher</span><span>' + esc(S.userById(r.teacherId).name) + '</span></div></div>' +
-        '<p class="small dim">In production this opens through a short-lived presigned S3 URL scoped to your account.</p>', '');
+      if (!r) return;
+      LC.data.resourceUrl(r.id).then(function (result) {
+        var board = S.db.boards[Object.keys(S.db.boards)[0]];
+        modal(r.name,
+          (r.ext === 'jpg' && board ? '<img src="' + board + '" alt="' + esc(r.name) + '" style="width:100%;border-radius:8px">' : '') +
+          '<div class="panel stack">' +
+          '<div class="row-between"><span class="muted">Type</span><span class="mono">.' + esc(r.ext) + '</span></div>' +
+          '<div class="row-between"><span class="muted">Size</span><span class="mono">' + F.bytes(r.bytes) + '</span></div>' +
+          '<div class="row-between"><span class="muted">Uploaded</span><span class="mono">' + F.dayTime(r.uploadedAt) + '</span></div>' +
+          '<div class="row-between"><span class="muted">Teacher</span><span>' + esc(S.userById(r.teacherId).name) + '</span></div>' +
+          '</div>' +
+          (result && result.url
+            ? '<a class="btn btn-primary" href="' + esc(result.url) + '" target="_blank" rel="noopener">Open file</a>' +
+              '<p class="small dim">Presigned link, valid for ' + (result.expiresIn || 300) + ' seconds.</p>'
+            : '<p class="small dim">' + (LC.data.isRemote()
+                ? 'No object storage is configured on the server, so the bytes are on its local disk.'
+                : 'Demo mode — this record has no file behind it.') + '</p>'), '');
+      });
     },
 
     /* --- announcements --- */
     'post-announcement': function (form, e) {
       e.preventDefault();
-      var me = S.currentUser();
       var title = document.getElementById('ann-title').value.trim();
       var body = document.getElementById('ann-body').value.trim();
       if (!title || !body) { toast('err', 'Fill both fields', 'An announcement needs a title and a message.'); return; }
-      S.commit('announcement:create', function (d) {
-        d.announcements.unshift({
-          id: S.uid('ann'), authorId: me.id, title: title, body: body,
-          audience: document.getElementById('ann-audience').value,
-          pinned: document.getElementById('ann-pinned').value === 'yes',
-          createdAt: S.iso(Date.now())
-        });
-        var aud = document.getElementById('ann-audience').value;
-        d.users.forEach(function (u) {
-          if (u.id === me.id) return;
-          if (aud === 'all' || (aud === 'teachers' && u.role === 'teacher') || (aud === 'students' && u.role === 'student')) {
-            S.notify(u.id, 'announcement', title, body.slice(0, 90));
-          }
-        });
-      });
-      form.reset();
-      toast('ok', 'Posted', 'Everyone in the audience was notified.');
-      render();
+      run(LC.data.postAnnouncement({
+        title: title, body: body,
+        audience: document.getElementById('ann-audience').value,
+        pinned: document.getElementById('ann-pinned').value === 'yes'
+      }), { title: 'Posted', body: 'Everyone in the audience was notified.' })
+        .then(function () { form.reset(); });
     },
-    'delete-announcement': function (el) {
-      var id = el.dataset.id;
-      S.commit('announcement:delete:' + id, function (d) { d.announcements = d.announcements.filter(function (a) { return a.id !== id; }); });
-      render();
-    },
+    'delete-announcement': function (el) { run(LC.data.deleteAnnouncement(el.dataset.id)); },
 
     /* --- attendance & payroll --- */
     'clock-in': function (el) {
-      var sesId = el.dataset.id;
-      var me = S.currentUser();
-      var ses = S.db.sessions.find(function (s) { return s.id === sesId; });
-      var late = Math.max(0, Math.round((Date.now() - new Date(ses.startsAt).getTime()) / 60000));
-      S.commit('attendance:in:' + sesId, function (d) {
-        d.attendance.unshift({
-          id: S.uid('att'), teacherId: me.id, sessionId: sesId, scheduledStart: ses.startsAt,
-          clockIn: S.iso(Date.now()), clockOut: null, minutesLate: late
-        });
-      });
-      toast(late > S.PAYROLL.graceMinutes ? 'warn' : 'ok', 'Clocked in',
-        late > S.PAYROLL.graceMinutes
-          ? late + ' minutes late — a deduction of ' + F.money(Math.max(0, late - S.PAYROLL.graceMinutes) * S.minuteRate(me) * S.PAYROLL.latePenalty) + ' applies.'
-          : 'On time, inside the ' + S.PAYROLL.graceMinutes + '-minute grace window.');
-      render();
+      var me = LC.data.currentUser();
+      LC.data.clockIn(el.dataset.id).then(function (record) {
+        render();
+        var late = record && record.minutesLate ? record.minutesLate : 0;
+        var over = Math.max(0, late - S.PAYROLL.graceMinutes);
+        toast(over > 0 ? 'warn' : 'ok', 'Clocked in',
+          over > 0
+            ? late + ' minutes late — a deduction of ' +
+              F.money(over * S.minuteRate(me) * S.PAYROLL.latePenalty) + ' applies.'
+            : 'On time, inside the ' + S.PAYROLL.graceMinutes + '-minute grace window.');
+      }).catch(function (err) { toast('err', 'Could not clock in', err.message); });
     },
     'clock-out': function (el) {
-      var id = el.dataset.id;
-      S.commit('attendance:out:' + id, function (d) {
-        var a = d.attendance.find(function (x) { return x.id === id; });
-        if (a) a.clockOut = S.iso(Date.now());
-      });
-      toast('ok', 'Clocked out', 'This session is closed for payroll.');
-      render();
+      run(LC.data.clockOut(el.dataset.id), { title: 'Clocked out', body: 'This session is closed for payroll.' });
     },
     'run-payroll': function () {
-      var to = Date.now(), from = to - 30 * 864e5;
-      var lines = S.payrollRun(from, to);
-      S.commit('payroll:run', function (d) {
-        d.payroll.push({
-          id: S.uid('pay'), periodStart: S.iso(from), periodEnd: S.iso(to),
-          status: 'approved', approvedBy: S.currentUser().id, createdAt: S.iso(Date.now()), lines: lines
-        });
-        lines.forEach(function (l) {
-          S.notify(l.teacherId, 'payroll', 'Payroll approved',
-            F.money(l.net) + ' for ' + (l.minutes / 60).toFixed(1) + ' hours' +
-            (l.deductions > 0 ? ', after ' + F.money(l.deductions) + ' in deductions' : '') + '.');
-        });
+      run(LC.data.runPayrollBatch(), {
+        title: 'Batch generated',
+        body: function (r) { return (r && r.count ? r.count : 0) + ' teachers notified.'; }
       });
-      toast('ok', 'Batch generated', lines.length + ' teachers notified.');
-      render();
     },
 
     /* --- billing --- */
     'pay-invoice': function (el) {
-      var id = el.dataset.id;
-      var inv = S.db.invoices.find(function (i) { return i.id === id; });
+      var inv = S.db.invoices.find(function (i) { return i.id === el.dataset.id; });
       modal('Pay ' + inv.number,
         '<div class="panel stack">' + inv.lines.map(function (l) {
-          return '<div class="row-between"><span class="muted">' + esc(l.label) + '</span><span class="mono">' + F.money(l.amount, inv.currency) + '</span></div>';
-        }).join('') + '<div class="row-between" style="border-top:1px solid var(--line);padding-top:10px">' +
+          return '<div class="row-between"><span class="muted">' + esc(l.label) + '</span>' +
+            '<span class="mono">' + F.money(l.amount, inv.currency) + '</span></div>';
+        }).join('') +
+        '<div class="row-between" style="border-top:1px solid var(--line);padding-top:10px">' +
         '<b>Total</b><b class="mono">' + F.money(inv.amount, inv.currency) + '</b></div></div>' +
-        '<div class="flag"><b>Test mode</b><div>No card is collected here. In production this hands off to Stripe Checkout, ' +
-        'and the invoice flips to paid when the <span class="mono">payment_intent.succeeded</span> webhook arrives.</div></div>',
-        '<button class="btn btn-primary" data-act="confirm-pay" data-id="' + id + '">Mark as paid</button>');
+        '<div class="flag"><b>' + (LC.data.isRemote() ? 'Stripe keys decide what happens next' : 'Demo mode') + '</b><div>' +
+        (LC.data.isRemote()
+          ? 'With STRIPE_SECRET_KEY set, this creates a real PaymentIntent and the invoice is only marked paid when the ' +
+            '<span class="mono">payment_intent.succeeded</span> webhook arrives. Without it the server says so rather than pretending.'
+          : 'No server is connected, so this settles the invoice in your browser only.') +
+        '</div></div>',
+        '<button class="btn btn-primary" data-act="confirm-pay" data-id="' + inv.id + '">' +
+        (LC.data.isRemote() ? 'Start payment' : 'Mark as paid') + '</button>');
     },
     'confirm-pay': function (el) {
-      var id = el.dataset.id;
-      S.commit('invoice:pay:' + id, function (d) {
-        var i = d.invoices.find(function (x) { return x.id === id; });
-        if (i) { i.status = 'paid'; i.paidAt = S.iso(Date.now()); }
-        S.notify('usr_owner', 'billing', 'Invoice paid', i.number + ' · ' + F.money(i.amount, i.currency));
-      });
-      closeModal();
-      toast('ok', 'Payment recorded', 'The invoice is settled.');
-      render();
+      LC.data.payInvoice(el.dataset.id).then(function (result) {
+        closeModal();
+        render();
+        if (result && result.mode === 'unconfigured') {
+          toast('warn', 'Stripe is not configured', result.message);
+        } else if (result && result.mode === 'stripe') {
+          toast('ok', 'Payment started', 'A PaymentIntent was created. Stripe Elements collects the card next.');
+        } else {
+          toast('ok', 'Payment recorded', 'The invoice is settled.');
+        }
+      }).catch(function (err) { toast('err', 'Payment could not start', err.message); });
     },
     'remind-invoice': function (el) {
       var inv = S.db.invoices.find(function (i) { return i.id === el.dataset.id; });
-      S.notify(inv.studentId, 'billing', 'Payment reminder',
-        inv.number + ' · ' + F.money(inv.amount, inv.currency) + ' is due ' + F.day(inv.dueAt) + '.');
-      toast('ok', 'Reminder sent', S.userById(inv.studentId).name + ' was notified.');
-      render();
+      run(LC.data.remindInvoice(el.dataset.id), {
+        title: 'Reminder sent', body: S.userById(inv.studentId).name + ' was notified.'
+      });
     },
 
     /* --- settings --- */
     'save-profile': function (form, e) {
       e.preventDefault();
-      var me = S.currentUser();
       var rate = document.getElementById('set-rate');
-      S.commit('profile:save', function (d) {
-        var u = d.users.find(function (x) { return x.id === me.id; });
-        u.name = document.getElementById('set-name').value.trim() || u.name;
-        u.locale = document.getElementById('set-locale').value;
-        u.tz = document.getElementById('set-tz').value.trim() || u.tz;
-        if (rate) u.hourlyRate = Math.max(0, +rate.value || 0);
+      run(LC.data.saveProfile({
+        name: document.getElementById('set-name').value.trim() || undefined,
+        locale: document.getElementById('set-locale').value,
+        timezone: document.getElementById('set-tz').value.trim() || undefined,
+        hourlyRate: rate ? Math.max(0, +rate.value || 0) : undefined
+      }), { title: 'Profile saved', body: 'Your changes are live.' });
+    },
+    'connect-server': function () {
+      modal('Connect to your server',
+        '<label class="field">API base URL<input type="text" id="server-url" placeholder="http://localhost:4001" ' +
+        'value="' + esc(LC.api.baseUrl() || 'http://localhost:4001') + '"></label>' +
+        '<p class="small muted">Run <span class="mono">npm run dev</span> in the repo, then point this at the server. ' +
+        'The app switches from demo data to PostgreSQL, and realtime runs over Socket.io.</p>' +
+        '<div id="connect-result"></div>',
+        '<button class="btn btn-primary" data-act="do-connect">Connect</button>');
+    },
+    'do-connect': function (el) {
+      var url = document.getElementById('server-url').value.trim();
+      var box = document.getElementById('connect-result');
+      el.disabled = true; el.textContent = 'Checking…';
+      LC.data.connect(url).then(function (info) {
+        closeModal();
+        bellOpen = false;
+        LC.data.logout();
+        render();
+        toast('ok', 'Connected', 'Talking to PostgreSQL now. Sign in with a server account.' +
+          (info.integrations && !info.integrations.stripe ? ' Stripe and Web Push are not configured there.' : ''));
+      }).catch(function (err) {
+        el.disabled = false; el.textContent = 'Connect';
+        if (box) {
+          box.innerHTML = '<div class="flag"><b>Could not reach that server</b><div>' + esc(err.message) +
+            '<br>Check it is running and that this page\'s origin is listed in <span class="mono">WEB_ORIGIN</span>.</div></div>';
+        }
       });
-      toast('ok', 'Profile saved', 'Your changes are live.');
+    },
+    'disconnect-server': function () {
+      LC.data.disconnect();
+      bellOpen = false;
+      location.hash = '#/dashboard';
       render();
+      toast('ok', 'Back to demo data', 'The app is running from your browser again.');
     },
     'enable-push': function () {
       if (typeof Notification === 'undefined') { toast('err', 'Not supported', 'This browser has no Notification API.'); return; }
-      Notification.requestPermission().then(function (p) {
-        if (p === 'granted') {
-          S.db.pushEnabled = true; S.save();
-          try { new Notification('LogicClass+', { body: 'Push is on. Class requests and reminders will reach you here.' }); } catch (e) {}
-          toast('ok', 'Push enabled', 'Production subscribes this browser with your VAPID public key.');
-        } else {
-          toast('warn', 'Push not enabled', 'You can turn notifications on later from your browser settings.');
+      Notification.requestPermission().then(function (permission) {
+        if (permission !== 'granted') {
+          toast('warn', 'Push not enabled', 'You can turn notifications on later in your browser settings.');
+          render();
+          return;
         }
-        render();
+        LC.data.subscribePush().then(function (result) {
+          if (result.configured) {
+            toast('ok', 'Push enabled', 'This browser is subscribed with the server\'s VAPID key.');
+          } else if (result.reason === 'no-vapid') {
+            toast('warn', 'Server has no VAPID keys', 'Run npx web-push generate-vapid-keys and set them in apps/server/.env.');
+          } else {
+            try { new Notification('LogicClass+', { body: 'Notifications are on for this browser.' }); } catch (e) {}
+            toast('ok', 'Notifications allowed', 'Connect a server to receive real push messages.');
+          }
+          render();
+        }).catch(function (err) { toast('err', 'Could not subscribe', err.message); });
       });
     },
     'install-pwa': function () {
       if (installPrompt) {
         installPrompt.prompt();
-        installPrompt.userChoice.then(function (c) {
-          toast(c.outcome === 'accepted' ? 'ok' : 'warn',
-            c.outcome === 'accepted' ? 'Installing' : 'Install dismissed',
-            c.outcome === 'accepted' ? 'LogicClass+ is being added to your device.' : 'You can install any time from this screen.');
+        installPrompt.userChoice.then(function (choice) {
+          toast(choice.outcome === 'accepted' ? 'ok' : 'warn',
+            choice.outcome === 'accepted' ? 'Installing' : 'Install dismissed',
+            choice.outcome === 'accepted' ? 'LogicClass+ is being added to your device.' : 'You can install any time from this screen.');
           installPrompt = null;
         });
       } else {
@@ -652,8 +638,8 @@
     },
     'reset-data': function () {
       modal('Reset demo data?',
-        '<p>This restores the seeded accounts, folders, sessions and invoices, and signs you out. Anything you changed in this ' +
-        'browser is discarded.</p>',
+        '<p>This restores the seeded accounts, folders, sessions and invoices in this browser, and signs you out. ' +
+        'It does not touch a connected server\'s database.</p>',
         '<button class="btn btn-danger" data-act="confirm-reset">Reset everything</button>');
     },
     'confirm-reset': function () {
@@ -689,7 +675,6 @@
 
   /* ============================== boot ============================== */
   function boot() {
-    S.load();
     applyTheme();
     document.addEventListener('click', function (e) {
       // close the bell when clicking outside it
@@ -725,7 +710,33 @@
       LC.app.swState = 'not supported by this browser';
     }
 
+    wireRealtime();
+
+    // Demo data first so the first paint is never empty, then swap in server
+    // state if one is configured and the stored token still works.
     render();
+    LC.data.bootstrap().then(render);
+  }
+
+  /* Socket events from the server. Registered once; they survive reconnects. */
+  function wireRealtime() {
+    LC.api.on('notification:new', function (note) {
+      S.db.notifications.unshift(note);
+      toast('ok', note.title, note.body);
+      render();
+    });
+    LC.api.on('classroom:request', function () {
+      LC.data.refresh().then(render);
+    });
+    LC.api.on('classroom:accepted', function (session) {
+      LC.data.refresh().then(function () {
+        render();
+        toast('ok', 'Class accepted', session.topic + ' is on your schedule.');
+      });
+    });
+    LC.api.on('disconnect', function () {
+      if (LC.data.isRemote()) toast('warn', 'Lost the server', 'Reconnecting…');
+    });
   }
 
   LC.app = {

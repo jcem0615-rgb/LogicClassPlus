@@ -11,7 +11,7 @@
   var S = LC.store, F = LC.fmt, esc = LC.esc;
 
   var R = {
-    session: null, stream: null, audioCtx: null, analyser: null, raf: null,
+    session: null, peerPresent: false, loaded: null, stream: null, audioCtx: null, analyser: null, raf: null,
     devices: { cams: [], mics: [], outs: [] },
     picked: { cam: '', mic: '' },
     joined: false, tab: 'whiteboard', camOn: true, micOn: true,
@@ -50,7 +50,7 @@
       /* --- side: video + controls + chat --- */
       html += '<div class="room-side">';
       html += '<div class="vid" id="vid-remote"><canvas id="peer-canvas"></canvas>' +
-        '<span class="tag">' + esc(other.name) + ' · simulated peer</span></div>';
+        '<span class="tag">' + esc(other.name) + (LC.data.isRemote() ? '' : ' · simulated peer') + '</span></div>';
       html += '<div class="vid" id="vid-local" style="aspect-ratio:16/11">' +
         '<video id="local-video" autoplay playsinline muted></video>' +
         '<div class="off hide" id="local-off">Camera off</div>' +
@@ -70,7 +70,7 @@
 
       var msgs = S.db.chats[ses.id] || [];
       html += '<section class="card chat" style="flex:1"><div class="card-head" style="padding:10px 14px"><h3>Chat</h3>' +
-        '<span class="small dim">' + msgs.length + ' messages</span></div>' +
+        '<span class="small dim" id="chat-count">' + msgs.length + ' messages</span></div>' +
         '<div class="chat-log" id="chat-log">' + msgs.map(chatBubble).join('') + '</div>' +
         '<form class="chat-form" data-act="send-chat"><input type="text" id="chat-input" placeholder="Message ' +
         esc(other.name.split(' ')[0]) + '" autocomplete="off"><button class="btn btn-primary btn-sm" type="submit">Send</button></form>' +
@@ -99,6 +99,23 @@
       renderTab();
       if (!R.joined) { startPreview(); }
       else { attachStream(); startTimer(); }
+
+      // Chat history and saved surfaces live with the session, not the browser.
+      LC.data.loadSession(R.session.id).then(function (payload) {
+        if (!R.session || !payload) return;
+        if (payload.messages && payload.messages.length) {
+          S.db.chats[R.session.id] = payload.messages;
+          var log = document.getElementById('chat-log');
+          if (log) {
+            log.innerHTML = payload.messages.map(chatBubble).join('');
+            log.scrollTop = log.scrollHeight;
+          }
+          var count = document.getElementById('chat-count');
+          if (count) count.textContent = payload.messages.length + ' messages';
+        }
+        R.loaded = payload.documents || {};
+        if (R.tab === 'document' || R.tab === 'equations') renderTab();
+      }).catch(function () { /* the room still works without history */ });
     },
     unmount: function () { teardown(); }
   };
@@ -108,7 +125,7 @@
       ' class="' + (R.tab === id ? 'on' : '') + '">' + esc(label) + '</button>';
   }
   function chatBubble(m) {
-    var me = S.currentUser();
+    var me = LC.data.currentUser();
     var mine = me && m.from === me.id;
     return '<div class="msg ' + (mine ? 'me' : 'them') + '">' +
       (mine ? '' : '<div class="who">' + esc(S.userById(m.from).name.split(' ')[0]) + '</div>') +
@@ -236,12 +253,62 @@
     R.joined = true;
     R.startedAt = Date.now();
     var ses = R.session;
-    S.commit('session:join:' + ses.id, function (d) {
-      var s = d.sessions.find(function (x) { return x.id === ses.id; });
-      if (s) { s.status = 'live'; s.joinedAt = S.iso(Date.now()); }
+    LC.data.joinSession(ses.id).then(function (result) {
+      R.peerPresent = Boolean(result && result.peers && result.peers.length);
+      subscribeRoom(ses.id);
+      LC.app.toast('ok', 'You are in',
+        LC.data.isRemote()
+          ? 'Signalling is live over Socket.io. A second browser signed in as the other participant joins this room.'
+          : 'No server connected, so the peer here is simulated.');
+      LC.app.render();
+    }).catch(function (err) {
+      R.joined = false;
+      LC.app.toast('err', 'Could not enter the classroom', err.message);
+      LC.app.render();
     });
-    LC.app.toast('ok', 'You are in', 'Signalling would now run over Socket.io — the peer here is simulated.');
-    LC.app.render();
+  }
+
+  /* Room events. Registered once per session id; the handlers below are
+     no-ops when the tab is not showing that room. */
+  var subscribed = {};
+  function subscribeRoom(sessionId) {
+    if (!LC.data.isRemote() || subscribed[sessionId]) return;
+    subscribed[sessionId] = true;
+
+    LC.api.on('chat:message', function (message) {
+      if (!R.session || message.sessionId !== R.session.id) return;
+      var me = LC.data.currentUser();
+      if (me && message.from === me.id) return; // already painted optimistically
+      var log = document.getElementById('chat-log');
+      if (log) {
+        log.insertAdjacentHTML('beforeend', chatBubble(message));
+        log.scrollTop = log.scrollHeight;
+      }
+    });
+
+    LC.api.on('classroom:peer-joined', function (peer) {
+      if (!R.session) return;
+      R.peerPresent = true;
+      LC.app.toast('ok', peer.name + ' joined', 'Negotiating the peer connection.');
+      paintPeerFrame();
+    });
+
+    LC.api.on('classroom:peer-left', function () {
+      R.peerPresent = false;
+      paintPeerFrame();
+    });
+
+    LC.api.on('classroom:board:stroke', function (payload) {
+      if (!R.session || R.tab !== 'whiteboard') return;
+      R.board.strokes.push(payload.stroke);
+      redraw(R.board);
+    });
+
+    LC.api.on('classroom:board:clear', function () {
+      if (!R.session) return;
+      R.board.strokes = [];
+      redraw(R.board);
+    });
   }
 
   function attachStream() {
@@ -305,7 +372,7 @@
     grd.addColorStop(0, '#0E2B2A'); grd.addColorStop(1, '#0A1618');
     g.fillStyle = grd; g.fillRect(0, 0, w, h);
     var ses = R.session;
-    var me = S.currentUser();
+    var me = LC.data.currentUser();
     var other = ses ? S.userById(me && me.id === ses.teacherId ? ses.studentId : ses.teacherId) : { name: '· ·' };
     // soft ring
     g.strokeStyle = 'rgba(79,191,175,.28)';
@@ -323,7 +390,12 @@
     g.fillText(F.initials(other.name), w / 2, h / 2 + 1);
     g.font = '400 12px "IBM Plex Mono", monospace';
     g.fillStyle = 'rgba(201,231,225,.75)';
-    g.fillText('waiting for signalling server', w / 2, h / 2 + 68);
+    g.fillText(
+      R.peerPresent ? 'peer connected — negotiating media'
+        : LC.data.isRemote() ? 'waiting for the other participant to join'
+        : 'simulated — no signalling server connected',
+      w / 2, Math.min(h - 34, h / 2 + 66),
+    );
   }
 
   /* ========================= tab bodies ========================= */
@@ -387,7 +459,8 @@
   }
 
   function tabEquations() {
-    var saved = (S.db.docs['eq_' + R.session.id]) || '\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}';
+    var saved = (R.loaded && R.loaded.equation) || S.db.docs['eq_' + R.session.id]
+      || '\\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}';
     return '<div class="stack" style="gap:12px">' +
       '<div class="row-between"><span class="eyebrow">LaTeX equation editor</span>' +
       '<span class="small dim">rendered with KaTeX → MathML</span></div>' +
@@ -406,11 +479,11 @@
 
   function tabDocument() {
     var key = 'doc_' + R.session.id;
-    var html = S.db.docs[key] || '<h2>Essay plan — describing a place</h2>' +
+    var html = (R.loaded && R.loaded.document) || S.db.docs[key] || '<h2>Essay plan — describing a place</h2>' +
       '<p>Choose <b>one</b> place you know well. Write four sentences: where it is, what you do there, who you go with, and why it matters to you.</p>' +
       '<ul><li>Where: <i>the night market two streets from my grandmother\'s flat</i></li>' +
       '<li>What: …</li><li>Who: …</li><li>Why: …</li></ul>';
-    var other = S.userById(S.currentUser().id === R.session.teacherId ? R.session.studentId : R.session.teacherId);
+    var other = S.userById(LC.data.currentUser().id === R.session.teacherId ? R.session.studentId : R.session.teacherId);
     return '<div class="stack" style="gap:10px">' +
       '<div class="row-between"><div class="row"><span class="presence"><i class="dot"></i>' + esc(other.name.split(' ')[0]) + ' · joined</span>' +
       '<span class="small dim mono" id="doc-count">0 words</span></div>' +
@@ -455,7 +528,7 @@
 
   function tabNotes() {
     var ses = R.session;
-    var me = S.currentUser();
+    var me = LC.data.currentUser();
     var other = S.userById(me.id === ses.teacherId ? ses.studentId : ses.teacherId);
     return '<div class="stack">' +
       LC.ui.summary([
@@ -517,7 +590,12 @@
       else { cur.points.push(p); }
       redraw(state);
     }
-    function up() { drawing = false; cur = null; state.undo = []; }
+    function up() {
+      if (drawing && cur && LC.data.isRemote() && kind === 'board' && R.session) {
+        LC.api.emit('classroom:board:stroke', { sessionId: R.session.id, stroke: cur });
+      }
+      drawing = false; cur = null; state.undo = [];
+    }
     c.addEventListener('pointerdown', down);
     c.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -568,7 +646,7 @@
   }
 
   function saveBoardToLibrary(state, name) {
-    var me = S.currentUser();
+    var me = LC.data.currentUser();
     var canvas = state.ctx && state.ctx.canvas;
     if (!canvas) return;
     var data;
@@ -577,19 +655,41 @@
     if (me.role !== 'teacher') { LC.app.toast('warn', 'Teacher only', 'Only the teacher can file material into the library.'); return; }
     var folder = S.db.folders.filter(function (f) { return f.teacherId === teacherId; })[0];
     if (!folder) {
+      if (LC.data.isRemote()) {
+        LC.data.createFolder('Session boards', R.session.subject).then(function () {
+          LC.app.toast('ok', 'Created “Session boards”', 'Press Save again to file the board there.');
+          LC.app.render();
+        });
+        return;
+      }
       folder = { id: S.uid('fld'), teacherId: teacherId, name: 'Session boards', subject: R.session.subject, createdAt: S.iso(Date.now()) };
       S.db.folders.push(folder);
     }
+    var filename = name + '-' + new Date().toISOString().slice(0, 10) + '.jpg';
+
+    if (LC.data.isRemote() && data) {
+      // Real upload: the canvas becomes a JPEG and goes through the same
+      // validated pipeline as any other file.
+      canvas.toBlob(function (blob) {
+        if (!blob) { LC.app.toast('err', 'Could not export the board', 'The canvas produced no image.'); return; }
+        var file = new File([blob], filename, { type: 'image/jpeg' });
+        LC.data.uploadFile(folder.id, file).then(function () {
+          LC.app.toast('ok', 'Saved to library', F.bytes(file.size) + ' filed under “' + folder.name + '”.');
+          LC.app.render();
+        }).catch(function (err) { LC.app.toast('err', 'Upload rejected', err.message); });
+      }, 'image/jpeg', 0.7);
+      return;
+    }
+
     var bytes = data ? Math.round(data.length * 0.75) : 0;
     S.commit('board:save', function (d) {
       d.resources.push({
         id: S.uid('res'), folderId: folder.id, teacherId: teacherId,
-        name: name + '-' + new Date().toISOString().slice(0, 10) + '.jpg',
-        ext: 'jpg', bytes: bytes, uploadedAt: S.iso(Date.now())
+        name: filename, ext: 'jpg', bytes: bytes, uploadedAt: S.iso(Date.now())
       });
       if (data && data.length < 900000) d.boards[R.session.id] = data;
       S.notify(R.session.studentId, 'resource', 'New material from your class',
-        'Saved to ' + folder.name + ' · ' + name + '.jpg');
+        'Saved to ' + folder.name + ' · ' + filename);
     });
     LC.app.toast('ok', 'Saved to library', F.bytes(bytes) + ' filed under “' + folder.name + '”.');
     LC.app.paintBell();
@@ -752,12 +852,7 @@
     'leave-room': function () {
       var ses = R.session;
       teardown();
-      if (ses) {
-        S.commit('session:leave:' + ses.id, function (d) {
-          var s = d.sessions.find(function (x) { return x.id === ses.id; });
-          if (s && s.status === 'live') s.status = 'scheduled';
-        });
-      }
+      if (ses) LC.data.leaveSession(ses.id);
       location.hash = '#/classes';
     },
     'toggle-mic': function (el) {
@@ -845,17 +940,16 @@
       var input = document.getElementById('chat-input');
       var text = input.value.trim();
       if (!text) return;
-      var me = S.currentUser();
-      S.commit('chat:send', function (d) {
-        d.chats[R.session.id] = d.chats[R.session.id] || [];
-        d.chats[R.session.id].push({ id: S.uid('msg'), from: me.id, text: text, at: S.iso(Date.now()) });
-      });
+      var me = LC.data.currentUser();
       input.value = '';
       var log = document.getElementById('chat-log');
       if (log) {
         log.insertAdjacentHTML('beforeend', chatBubble({ from: me.id, text: text }));
         log.scrollTop = log.scrollHeight;
       }
+      LC.data.sendChat(R.session.id, text).catch(function (err) {
+        LC.app.toast('err', 'Message not sent', err.message);
+      });
     },
     'board-tool': function (el) { R.board.tool = el.dataset.tool; renderTab(); },
     'ann-tool': function (el) { R.ann.tool = el.dataset.tool; renderTab(); },
@@ -864,7 +958,11 @@
     'board-width': function (el) { R.board.width = +el.value; },
     'board-undo': function () { if (R.board.strokes.length) { R.board.undo.push(R.board.strokes.pop()); redraw(R.board); } },
     'ann-undo': function () { if (R.ann.strokes.length) { R.ann.strokes.pop(); redraw(R.ann); } },
-    'board-clear': function () { R.board.strokes = []; redraw(R.board); },
+    'board-clear': function () {
+      R.board.strokes = [];
+      redraw(R.board);
+      if (LC.data.isRemote() && R.session) LC.api.emit('classroom:board:clear', { sessionId: R.session.id });
+    },
     'ann-clear': function () { R.ann.strokes = []; redraw(R.ann); },
     'board-save': function () { saveBoardToLibrary(R.board, 'whiteboard'); },
     'ann-save': function () { saveBoardToLibrary(R.ann, 'annotated'); },
@@ -880,8 +978,9 @@
     },
     'eq-save': function () {
       var src = document.getElementById('eq-src');
-      S.commit('equation:save', function (d) { d.docs['eq_' + R.session.id] = src.value; });
-      LC.app.toast('ok', 'Equation saved', 'Stored with this session\'s notes.');
+      LC.data.saveDocument(R.session.id, 'equation', src.value).then(function () {
+        LC.app.toast('ok', 'Equation saved', 'Stored with this session\'s notes.');
+      }).catch(function (err) { LC.app.toast('err', 'Not saved', err.message); });
     },
     'eq-to-board': function () {
       var src = document.getElementById('eq-src');
@@ -903,34 +1002,31 @@
     },
     'doc-save': function () {
       var ed = document.getElementById('doc-editor');
-      S.commit('document:save', function (d) { d.docs['doc_' + R.session.id] = ed.innerHTML; });
-      LC.app.toast('ok', 'Document saved', 'Kept with this session. Yjs would sync it to your student live.');
+      LC.data.saveDocument(R.session.id, 'document', ed.innerHTML).then(function () {
+        LC.app.toast('ok', 'Document saved', LC.data.isRemote()
+          ? 'Saved to the session record in PostgreSQL.'
+          : 'Kept in this browser. Connect a server to share it.');
+      }).catch(function (err) { LC.app.toast('err', 'Not saved', err.message); });
     },
     'voice-record': function () { voiceRecord(); },
     'voice-analyse': function () { analyseSpeech(); },
     'next-phrase': function () { R.voice.phrase = (R.voice.phrase + 1) % PHRASES.length; R.voice.peaks = null; R.voice.url = null; renderTab(); },
     'end-session': function () {
       var ses = R.session;
-      S.commit('session:complete:' + ses.id, function (d) {
-        var s = d.sessions.find(function (x) { return x.id === ses.id; });
-        if (s) { s.status = 'completed'; s.endedAt = S.iso(Date.now()); }
-        var att = d.attendance.find(function (a) { return a.sessionId === ses.id; });
-        if (att && !att.clockOut) att.clockOut = S.iso(Date.now());
-        S.notify(ses.studentId, 'session', 'Class finished', esc(ses.topic) + ' — your teacher marked it complete.');
-      });
       teardown();
-      LC.app.toast('ok', 'Session complete', 'Attendance closed and the student was notified.');
-      location.hash = '#/classes';
+      LC.data.completeSession(ses.id, 'completed').then(function () {
+        LC.app.toast('ok', 'Session complete', 'Attendance closed and the student was notified.');
+        location.hash = '#/classes';
+      }).catch(function (err) { LC.app.toast('err', 'Could not close the session', err.message); });
     },
     'mark-noshow': function () {
       var ses = R.session;
-      S.commit('session:noshow:' + ses.id, function (d) {
-        var s = d.sessions.find(function (x) { return x.id === ses.id; });
-        if (s) s.status = 'no_show';
-      });
       teardown();
-      LC.app.toast('warn', 'Marked as a no-show', 'The admin can review this on the attendance screen.');
-      location.hash = '#/classes';
+      LC.data.markNoShow(ses.id).then(function () {
+        LC.app.toast('warn', 'Marked as a no-show',
+          'The whole session fee is forfeited. The admin can review it on the attendance screen.');
+        location.hash = '#/classes';
+      }).catch(function (err) { LC.app.toast('err', 'Could not mark the no-show', err.message); });
     }
   };
 

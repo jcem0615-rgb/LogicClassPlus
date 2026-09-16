@@ -1,0 +1,364 @@
+// ---------------------------------------------------------------
+// LogicClass+ — data model
+// Money is stored in minor units (cents) as integers. Never floats.
+// ---------------------------------------------------------------
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  OWNER
+  TEACHER
+  STUDENT
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  SUSPENDED
+}
+
+enum Subject {
+  MATH
+  ENGLISH
+}
+
+enum Audience {
+  ALL
+  TEACHERS
+  STUDENTS
+}
+
+enum RequestStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  CANCELLED
+}
+
+enum SessionStatus {
+  SCHEDULED
+  LIVE
+  COMPLETED
+  NO_SHOW
+  CANCELLED
+}
+
+enum DocumentKind {
+  BOARD
+  DOCUMENT
+  EQUATION
+  ANNOTATION
+}
+
+enum BatchStatus {
+  DRAFT
+  APPROVED
+  PAID
+}
+
+enum InvoiceStatus {
+  DRAFT
+  OPEN
+  PAID
+  VOID
+}
+
+enum ResetStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id              String     @id @default(cuid())
+  email           String     @unique
+  passwordHash    String
+  name            String
+  role            Role       @default(STUDENT)
+  status          UserStatus @default(PENDING)
+  locale          String     @default("en-US") // reserved for i18n; no framework wired yet
+  timezone        String     @default("UTC")
+  subjects        Subject[]  @default([])
+  hourlyRateCents Int?       // teachers only
+  gradeLevel      String?    // students only
+  bio             String?
+  seeded          Boolean    @default(false)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  folders           Folder[]
+  resources         Resource[]
+  announcements     Announcement[]
+  requestsAsStudent ClassRequest[]        @relation("StudentRequests")
+  requestsAsTeacher ClassRequest[]        @relation("TeacherRequests")
+  sessionsAsStudent ClassSession[]        @relation("StudentSessions")
+  sessionsAsTeacher ClassSession[]        @relation("TeacherSessions")
+  attendance        Attendance[]
+  payrollLines      PayrollLine[]
+  approvedBatches   PayrollBatch[]        @relation("BatchApprover")
+  invoices          Invoice[]
+  notifications     Notification[]
+  pushSubscriptions PushSubscription[]
+  resetRequests     PasswordResetRequest[] @relation("ResetSubject")
+  resolvedResets    PasswordResetRequest[] @relation("ResetResolver")
+  chatMessages      ChatMessage[]
+
+  @@index([role, status])
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Folder {
+  id        String   @id @default(cuid())
+  teacherId String
+  parentId  String?
+  name      String
+  subject   Subject
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  teacher   User       @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  parent    Folder?    @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]   @relation("FolderTree")
+  resources Resource[]
+
+  @@index([teacherId])
+}
+
+model Resource {
+  id         String   @id @default(cuid())
+  folderId   String
+  teacherId  String // denormalised so every query can filter by owner without a join
+  name       String
+  ext        String
+  mimeType   String?
+  bytes      Int
+  storageKey String
+  createdAt  DateTime @default(now())
+
+  folder  Folder @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  teacher User   @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@index([folderId])
+  @@index([teacherId])
+}
+
+model Announcement {
+  id        String   @id @default(cuid())
+  authorId  String
+  title     String
+  body      String
+  audience  Audience @default(ALL)
+  pinned    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  author User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+}
+
+model ClassRequest {
+  id           String        @id @default(cuid())
+  studentId    String
+  teacherId    String
+  subject      Subject
+  topic        String
+  note         String?
+  requestedFor DateTime
+  minutes      Int           @default(60)
+  status       RequestStatus @default(PENDING)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  student User          @relation("StudentRequests", fields: [studentId], references: [id], onDelete: Cascade)
+  teacher User          @relation("TeacherRequests", fields: [teacherId], references: [id], onDelete: Cascade)
+  session ClassSession?
+
+  @@index([teacherId, status])
+  @@index([studentId, status])
+}
+
+model ClassSession {
+  id           String        @id @default(cuid())
+  requestId    String?       @unique
+  teacherId    String
+  studentId    String
+  subject      Subject
+  topic        String
+  startsAt     DateTime
+  minutes      Int           @default(60)
+  status       SessionStatus @default(SCHEDULED)
+  joinedAt     DateTime?
+  endedAt      DateTime?
+  recordingUrl String? // filled by an SFU/media server; P2P WebRTC cannot produce this
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  request    ClassRequest?     @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  teacher    User              @relation("TeacherSessions", fields: [teacherId], references: [id], onDelete: Cascade)
+  student    User              @relation("StudentSessions", fields: [studentId], references: [id], onDelete: Cascade)
+  attendance Attendance?
+  documents  SessionDocument[]
+  messages   ChatMessage[]
+
+  @@index([teacherId, startsAt])
+  @@index([studentId, startsAt])
+}
+
+model SessionDocument {
+  id        String       @id @default(cuid())
+  sessionId String
+  kind      DocumentKind
+  content   String // whiteboard stroke JSON, Tiptap HTML, or LaTeX source
+  updatedBy String?
+  updatedAt DateTime     @updatedAt
+  createdAt DateTime     @default(now())
+
+  session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, kind])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  sessionId String
+  senderId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sender  User         @relation(fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+}
+
+model Attendance {
+  id             String    @id @default(cuid())
+  teacherId      String
+  sessionId      String    @unique
+  scheduledStart DateTime
+  clockIn        DateTime?
+  clockOut       DateTime?
+  minutesLate    Int       @default(0)
+  noShow         Boolean   @default(false)
+  deductionCents Int       @default(0)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  teacher User         @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([teacherId, scheduledStart])
+}
+
+model PayrollBatch {
+  id           String      @id @default(cuid())
+  periodStart  DateTime
+  periodEnd    DateTime
+  status       BatchStatus @default(DRAFT)
+  approvedById String?
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+
+  approvedBy User?         @relation("BatchApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  lines      PayrollLine[]
+}
+
+model PayrollLine {
+  id             String @id @default(cuid())
+  batchId        String
+  teacherId      String
+  sessions       Int    @default(0)
+  minutes        Int    @default(0)
+  lateMinutes    Int    @default(0)
+  noShows        Int    @default(0)
+  grossCents     Int    @default(0)
+  deductionCents Int    @default(0)
+  netCents       Int    @default(0)
+
+  batch   PayrollBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  teacher User         @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@unique([batchId, teacherId])
+}
+
+model Invoice {
+  id                    String        @id @default(cuid())
+  number                String        @unique
+  studentId             String
+  amountCents           Int
+  currency              String        @default("USD")
+  status                InvoiceStatus @default(DRAFT)
+  issuedAt              DateTime      @default(now())
+  dueAt                 DateTime
+  paidAt                DateTime?
+  stripeInvoiceId       String?
+  stripePaymentIntentId String?
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+
+  student User          @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  lines   InvoiceLine[]
+
+  @@index([studentId, status])
+}
+
+model InvoiceLine {
+  id          String @id @default(cuid())
+  invoiceId   String
+  label       String
+  amountCents Int
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  type      String
+  title     String
+  body      String
+  url       String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model PasswordResetRequest {
+  id             String      @id @default(cuid())
+  userId         String
+  email          String
+  status         ResetStatus @default(PENDING)
+  tokenHash      String?
+  tokenExpiresAt DateTime?
+  requestedAt    DateTime    @default(now())
+  resolvedAt     DateTime?
+  resolvedById   String?
+
+  user       User  @relation("ResetSubject", fields: [userId], references: [id], onDelete: Cascade)
+  resolvedBy User? @relation("ResetResolver", fields: [resolvedById], references: [id], onDelete: SetNull)
+
+  @@index([status])
+}

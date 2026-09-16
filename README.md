@@ -1,23 +1,39 @@
 # LogicClass+
 
-A production-shaped PWA front end for the LogicClass+ international English & Math
-tutoring platform, built from the handoff in [`CLAUDE.md`](./CLAUDE.md).
+An international English & Math tutoring platform: 1-on-1 live classrooms with a
+Math suite and an English suite, teacher attendance and payroll, and Stripe
+billing. Built from the handoff in [`CLAUDE.md`](./CLAUDE.md).
 
-**Live preview:** https://claude.ai/artifact/XAzkbT1mbjVXNQnfojfiS2
+**Hosted preview (demo data, no server):** https://claude.ai/artifact/XAzkbT1mbjVXNQnfojfiS2
 
-## Running it
-
-No build step and no dependencies — it is plain HTML, CSS and ES5-compatible JS.
-
-```bash
-npx serve app -l 8123      # or any static file server
-open http://localhost:8123
+```
+LogicClass-Plus/
+├── apps/
+│   ├── server/   Node + Express + Socket.io + Prisma — API, realtime, signalling
+│   └── pwa/      the PWA client — static, no build step
+├── docs/         status against the build phases, API and socket reference
+└── package.json  npm workspaces root
 ```
 
-A service worker and manifest are included, so it installs as an app and the shell
-works offline.
+## Run it
 
-## Demo accounts
+Needs Node 20+ and PostgreSQL 14+.
+
+```bash
+npm install
+cp apps/server/.env.example apps/server/.env     # set DATABASE_URL and JWT_SECRET
+npm run -w apps/server prisma:generate
+npm run -w apps/server prisma:migrate
+npm run -w apps/server seed
+npm run dev            # API on :4001, client on :4000
+```
+
+Open http://localhost:4000. It starts on demo data; **Settings → Connect a
+server**, enter `http://localhost:4001`, and it switches to PostgreSQL with
+realtime over Socket.io. The client keeps that choice, so it comes back
+connected next time.
+
+Seeded accounts (`SEED_DEMO_DATA=false` seeds only the Owner):
 
 | Role | Email | Password |
 | --- | --- | --- |
@@ -26,59 +42,71 @@ works offline.
 | Teacher (English) | `hana@logicclass.plus` | `teach1234` |
 | Student | `amira@logicclass.plus` | `learn1234` |
 
-The Owner is seeded and can never be created from the public form — registration is
-Teacher/Student only, and new accounts are held at `pending` until the Owner approves
-them, exactly as the spec requires.
+The Owner is seeded and can never be created from the public form. Registration
+is Teacher/Student only and new accounts sit at `PENDING` until the Owner
+approves them.
 
-## What is here
+To see a real two-person classroom, sign in as the teacher in one browser and the
+student in another, and open the same session.
 
-| Area | Built |
-| --- | --- |
-| Auth | Sign in, role-gated registration, admin approval queue, password-reset request queue |
-| Dashboards | Separate Owner, Teacher and Student home screens |
-| Library | Folders and resources, upload pipeline with the 20 MB + extension allowlist enforced, per-teacher isolation on every query |
-| Announcements | Post to everyone / teachers / students, pinning, fan-out to notifications |
-| Classes | Student request → teacher accept/decline → scheduled `ClassSession` |
-| Classroom | Pre-call hardware check (real `getUserMedia`, device enumeration and switching, live mic meter), room shell, chat |
-| Math suite | Vector whiteboard (pen, highlighter, line, box, eraser, undo, save to library), PDF/image annotator, LaTeX editor rendering through KaTeX → MathML |
-| English suite | Rich-text shared document with presence chip and word count, pronunciation recorder with a real amplitude envelope measured from the recording |
-| Attendance | Clock in/out, lateness against a 5-minute grace window, deduction arithmetic shown in full |
-| Payroll | Per-teacher batch preview (sessions, minutes, lateness, no-shows, gross, deductions, net) and batch history |
-| Billing | Invoice list, payment flow, reminders |
-| PWA | Manifest, service worker, install prompt, offline outbox that queues writes and replays them on reconnect |
+## Tests
 
-## What is deliberately not here
-
-The handoff's own gap list, plus the boundary of a front end with no server:
-
-- **Data lives in `localStorage`, not PostgreSQL.** The shapes mirror the Prisma models
-  named in the handoff (`User`, `Folder`, `Resource`, `Announcement`, `ClassRequest`,
-  `ClassSession`, `Attendance`, `PayrollBatch`, `Invoice`, `Notification`,
-  `PasswordResetRequest`) so the swap to real API calls is a transport change.
-- **No Socket.io server**, so the second participant in a classroom is a clearly
-  labelled simulated peer. Whiteboard strokes, Yjs document sync and presence are
-  local until the signalling server exists.
-- **Server-side call recording needs an SFU.** Browser-to-browser WebRTC gives the
-  server no stream to record. The Record button captures *your own* tracks with
-  `MediaRecorder` and keeps the clip in the tab. LiveKit / mediasoup / a managed
-  service is still a decision to make.
-- **Pronunciation scoring needs a speech API.** The waveform is measured from the real
-  recording; the per-phoneme numbers are a labelled placeholder, not a measurement.
-- **Stripe, S3/R2 and VAPID keys are not wired up.** Paying an invoice settles it
-  locally so the flow is visible.
-- **i18n is not built.** `locale` is carried on `User` and editable, as specified.
-
-## Layout
-
+```bash
+npm run -w apps/server typecheck
+node apps/server/test/smoke.mjs      # needs the server running
 ```
-app/
-├── index.html            page shell, font + CDN script loading
-├── styles.css            design tokens, light/dark, responsive shell
-├── store.js              data model, seed, auth, validation, payroll maths, offline outbox
-├── views.js              dashboards, library, announcements, classes, attendance, payroll, billing, settings
-├── classroom.js          hardware check, room, Math suite, English suite
-├── app.js                router, shell, notifications, toasts, modals, theme, PWA
-├── sw.js                 offline shell cache + Web Push handlers
-├── manifest.webmanifest
-└── icon.svg
-```
+
+`test/smoke.mjs` drives the whole API as four different users: auth and role
+gates, the approval flow, cross-teacher isolation, upload rejection, the
+request → session → attendance → payroll chain, billing, announcement fan-out,
+and a live Socket.io session that checks a WebRTC offer is relayed between two
+sockets and that chat lands in Postgres. 59 assertions.
+
+## What the server enforces
+
+- **Passwords** are scrypt with a per-password salt, compared in constant time.
+  The hash is never serialised — `publicUser()` is the only way a user leaves
+  the process.
+- **Every request body, query and param** is parsed by Zod before a handler sees
+  it. Validated values replace the raw input.
+- **Multi-tenant isolation** is a `WHERE` clause on every folder and resource
+  query, not a UI filter. A teacher asking for another teacher's folder by ID
+  gets the same 404 as for a folder that does not exist, so IDs leak nothing.
+- **Uploads** are checked for extension and size *before* a storage key is
+  issued, and again when the row is created; a key that does not start with
+  `teachers/<your id>/` is refused.
+- **Money** is integer cents everywhere. Payroll: a 5-minute grace window, then
+  late minutes at 1.5× the minute rate; a no-show forfeits the session fee.
+  Generating a batch freezes the figures rather than recomputing them later.
+- **Stripe** invoices are marked paid by the signature-verified
+  `payment_intent.succeeded` webhook, never by the browser. Without keys the
+  server says so instead of faking a payment.
+- **Sockets** authenticate at the handshake and verify room membership server-side.
+
+## Configuration
+
+`apps/server/.env.example` lists every variable. The server runs with only
+`DATABASE_URL` and `JWT_SECRET`; each integration switches on when its keys
+appear, and `GET /api/health` reports which are live:
+
+- **S3 / R2** — presigned PUT uploads. Without a bucket, files go to
+  `LOCAL_UPLOAD_DIR` on the API host.
+- **Stripe** — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
+- **Web Push** — `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY`
+  (`npx web-push generate-vapid-keys`). Subscriptions the browser drops are pruned.
+
+## What is still open
+
+Read [`docs/00-status.md`](./docs/00-status.md) — it tracks every phase in the
+handoff and is explicit about the three places this departs from the specified
+stack and why. In short:
+
+- **Call recording needs an SFU.** P2P WebRTC gives the server no stream.
+  `ClassSession.recordingUrl` is ready for LiveKit/mediasoup/a managed service.
+- **Pronunciation scoring needs a speech API.** The waveform is real; the
+  per-phoneme scores are a labelled placeholder.
+- **The peer connection itself.** Signalling is relayed end to end and verified
+  by the smoke test; the `RTCPeerConnection` that consumes those messages is the
+  remaining client work. [`docs/realtime.md`](./docs/realtime.md) has the steps.
+- **`apps/web` (Next.js) was not built.** `apps/pwa` carries the full feature
+  surface as a dependency-free static PWA.
