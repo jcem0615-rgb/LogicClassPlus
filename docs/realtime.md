@@ -32,16 +32,30 @@ Event names are namespaced by feature, as the handoff requires.
 | `classroom:state` | The session after a join/leave/complete |
 | `chat:message` | The persisted message |
 
-## Completing the WebRTC call
+## The peer connection
 
-`classroom:signal` is a working relay; both sides still need the peer connection
-that consumes it:
+`apps/pwa/webrtc.js` implements it, and it is verified end to end: two browsers
+reach `connectionState === "connected"` with real media flowing both ways.
 
-1. On `classroom:peer-joined`, the teacher creates an `RTCPeerConnection`, adds
-   the local tracks, and emits its offer over `classroom:signal`.
-2. The student answers on the same channel; both sides trickle ICE candidates
-   through it.
-3. Attach the remote stream to the tile that currently draws the stand-in.
+Two decisions in there are worth keeping if you rework it:
 
-Add a TURN server for participants behind symmetric NAT — STUN alone will not
-connect every pair across the timezones this platform serves.
+- **Only the impolite peer offers.** Roles are fixed — the teacher is impolite,
+  the student polite — so `onnegotiationneeded` produces an offer on one side
+  only. Letting both offer means a rollback, and a rollback restarts ICE
+  gathering, which in testing left neither side with a usable candidate pair.
+- **ICE candidates are queued until the remote description exists.** They
+  routinely arrive before the offer they belong to. Added early they are
+  rejected and lost, and the call then fails with no error anyone can see.
+
+Device switching uses `RTCRtpSender.replaceTrack()`, so changing camera or
+microphone mid-call needs no renegotiation and the far side sees nothing.
+
+### TURN
+
+`GET /api/realtime/ice` returns the ICE servers. STUN alone connects most pairs;
+it does not connect participants behind symmetric NAT or strict corporate
+firewalls, which on a platform spanning these timezones is routine. Run coturn
+with `use-auth-secret` and set `TURN_URLS` plus `TURN_STATIC_SECRET` — the
+server then mints per-request credentials that expire, so the long-lived secret
+never reaches a browser. The classroom tells the user when a connection fails
+without TURN configured, rather than just showing a dead tile.

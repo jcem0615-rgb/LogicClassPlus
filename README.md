@@ -101,12 +101,14 @@ Read [`docs/00-status.md`](./docs/00-status.md) — it tracks every phase in the
 handoff and is explicit about the three places this departs from the specified
 stack and why. In short:
 
-- **Call recording needs an SFU.** P2P WebRTC gives the server no stream.
-  `ClassSession.recordingUrl` is ready for LiveKit/mediasoup/a managed service.
+- **Recording is wired to LiveKit but unproven** — there was no live LiveKit
+  server to test against, and media still flows peer-to-peer, so nothing reaches
+  the SFU yet. [`docs/recording.md`](./docs/recording.md) covers setup and sizing:
+  a 3-hour class is about **2.15 GB** at 720p, 67 MB audio-only.
 - **Pronunciation scoring needs a speech API.** The waveform is real; the
   per-phoneme scores are a labelled placeholder.
-- **The peer connection itself.** Signalling is relayed end to end and verified
-  by the smoke test; the `RTCPeerConnection` that consumes those messages is the
-  remaining client work. [`docs/realtime.md`](./docs/realtime.md) has the steps.
+- **Live co-editing.** The shared document saves per session, but Tiptap + Yjs
+  over the existing `classroom:doc:update` relay is not wired. Largest remaining
+  gap against the spec.
 - **`apps/web` (Next.js) was not built.** `apps/pwa` carries the full feature
   surface as a dependency-free static PWA.

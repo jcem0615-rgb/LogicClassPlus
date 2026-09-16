@@ -449,7 +449,7 @@
             return '<option value="' + t.id + '">' + esc(t.name) + ' — ' + (t.subjects || []).join(', ') + '</option>';
           }).join('') + '</select></label>' +
           '<label class="field">Subject<select id="req-subject" name="subject"><option value="math">Math</option><option value="english">English</option></select></label>' +
-          '<label class="field">Length<select id="req-minutes" name="minutes"><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60" selected>60 minutes</option><option value="90">90 minutes</option></select></label>' +
+          '<label class="field">Length<select id="req-minutes" name="minutes"><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60" selected>60 minutes</option><option value="90">90 minutes</option><option value="120">2 hours</option><option value="180">3 hours</option><option value="240">4 hours</option></select></label>' +
           '<label class="field">Date &amp; time<input type="datetime-local" id="req-when" name="when" required></label>' +
           '</div>' +
           '<label class="field">Topic<input type="text" id="req-topic" name="topic" required placeholder="e.g. Completing the square — homework 4"></label>' +

@@ -1,7 +1,7 @@
 /* LogicClass+ service worker — offline app shell.
    Cache-first for the shell, network-first for everything else. */
 var CACHE = 'logicclass-v1';
-var SHELL = ['./', 'index.html', 'styles.css', 'store.js', 'api.js', 'data.js', 'views.js', 'classroom.js', 'app.js', 'manifest.webmanifest', 'icon.svg'];
+var SHELL = ['./', 'index.html', 'styles.css', 'store.js', 'api.js', 'data.js', 'webrtc.js', 'views.js', 'classroom.js', 'app.js', 'manifest.webmanifest', 'icon.svg'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) {

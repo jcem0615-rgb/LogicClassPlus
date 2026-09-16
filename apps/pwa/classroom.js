@@ -11,7 +11,7 @@
   var S = LC.store, F = LC.fmt, esc = LC.esc;
 
   var R = {
-    session: null, peerPresent: false, loaded: null, stream: null, audioCtx: null, analyser: null, raf: null,
+    session: null, peerPresent: false, loaded: null, peerState: null, hasRemoteStream: false, roomRecording: false, stream: null, audioCtx: null, analyser: null, raf: null,
     devices: { cams: [], mics: [], outs: [] },
     picked: { cam: '', mic: '' },
     joined: false, tab: 'whiteboard', camOn: true, micOn: true,
@@ -49,8 +49,12 @@
 
       /* --- side: video + controls + chat --- */
       html += '<div class="room-side">';
-      html += '<div class="vid" id="vid-remote"><canvas id="peer-canvas"></canvas>' +
-        '<span class="tag">' + esc(other.name) + (LC.data.isRemote() ? '' : ' · simulated peer') + '</span></div>';
+      html += '<div class="vid" id="vid-remote">' +
+        '<canvas id="peer-canvas"></canvas>' +
+        '<video id="remote-video" class="hide" autoplay playsinline></video>' +
+        '<span class="tag" id="remote-tag">' + esc(other.name) +
+        (LC.data.isRemote() ? '' : ' · simulated peer') + '</span>' +
+        '<div class="state" id="remote-state"></div></div>';
       html += '<div class="vid" id="vid-local" style="aspect-ratio:16/11">' +
         '<video id="local-video" autoplay playsinline muted></video>' +
         '<div class="off hide" id="local-off">Camera off</div>' +
@@ -64,7 +68,7 @@
         '<button class="btn btn-sm" data-act="toggle-mic">Mute</button>' +
         '<button class="btn btn-sm" data-act="toggle-cam">Camera off</button>' +
         '<button class="btn btn-sm" data-act="open-devices">Devices</button>' +
-        '<button class="btn btn-sm" data-act="toggle-record">Record</button>' +
+        '<button class="btn btn-sm" data-act="toggle-record" title="Records only your own camera and microphone, in this tab">Record me</button>' +
         '<button class="btn btn-sm btn-danger" data-act="leave-room">Leave</button>' +
         '</div></div>';
 
@@ -253,14 +257,23 @@
     R.joined = true;
     R.startedAt = Date.now();
     var ses = R.session;
+
+    // Subscribe before joining, never after: the server tells the other side we
+    // have arrived the moment we join the room, and their offer can land before
+    // our join round-trip resolves. Registered late, that offer has no listener
+    // and the call never negotiates.
+    subscribeRoom(ses.id);
+
     LC.data.joinSession(ses.id).then(function (result) {
-      R.peerPresent = Boolean(result && result.peers && result.peers.length);
-      subscribeRoom(ses.id);
+      var peers = (result && result.peers) || [];
+      R.peerPresent = peers.length > 0;
       LC.app.toast('ok', 'You are in',
         LC.data.isRemote()
-          ? 'Signalling is live over Socket.io. A second browser signed in as the other participant joins this room.'
+          ? (R.peerPresent ? 'Connecting to the other participant.' : 'Waiting for the other participant to join.')
           : 'No server connected, so the peer here is simulated.');
       LC.app.render();
+      // Someone is already here: open the peer connection straight away.
+      if (R.peerPresent) startPeer(peers[0] && peers[0].socketId);
     }).catch(function (err) {
       R.joined = false;
       LC.app.toast('err', 'Could not enter the classroom', err.message);
@@ -291,11 +304,39 @@
       R.peerPresent = true;
       LC.app.toast('ok', peer.name + ' joined', 'Negotiating the peer connection.');
       paintPeerFrame();
+      startPeer(peer.socketId);
     });
 
     LC.api.on('classroom:peer-left', function () {
       R.peerPresent = false;
+      LC.webrtc.stop();
+      R.hasRemoteStream = false;
+      syncRemoteTile();
       paintPeerFrame();
+    });
+
+    // Every signalling message goes straight to the peer connection.
+    LC.api.on('classroom:signal', function (message) {
+      if (!R.session) return;
+      if (!LC.webrtc.active()) {
+        // The offer can arrive before peer-joined does; open the connection now.
+        startPeer(message.fromSocket).then(function () { LC.webrtc.handleSignal(message); });
+        return;
+      }
+      LC.webrtc.handleSignal(message);
+    });
+
+    LC.api.on('classroom:recording', function (payload) {
+      if (payload.status === 'started') {
+        R.roomRecording = true;
+        LC.app.toast('warn', 'This class is being recorded', 'Both participants are told whenever recording starts.');
+      } else if (payload.status === 'ready') {
+        R.roomRecording = false;
+        LC.app.toast('ok', 'Recording saved', F.bytes(payload.bytes || 0) + ' uploaded by the media server.');
+      } else {
+        R.roomRecording = false;
+      }
+      paintState();
     });
 
     LC.api.on('classroom:board:stroke', function (payload) {
@@ -332,6 +373,7 @@
     if (!R.micOn) s += '<span class="pill pill-crit">Muted</span>';
     if (!R.camOn) s += '<span class="pill pill-crit">No video</span>';
     if (R.recording) s += '<span class="pill pill-crit"><i class="dot"></i>REC</span>';
+    if (R.roomRecording) s += '<span class="pill pill-crit"><i class="dot"></i>CLASS REC</span>';
     el.innerHTML = s;
   }
 
@@ -344,6 +386,10 @@
   }
 
   function teardown() {
+    LC.webrtc.stop();
+    R.hasRemoteStream = false;
+    R.peerState = null;
+    showRemoteVideo(false);
     stopStream();
     if (R.raf) cancelAnimationFrame(R.raf);
     if (R.audioCtx && R.audioCtx.state !== 'closed') { try { R.audioCtx.close(); } catch (e) {} }
@@ -398,6 +444,80 @@
     );
   }
 
+  /* ====================== peer connection ====================== */
+  var peerWired = false;
+
+  function startPeer(peerSocket) {
+    if (!LC.data.isRemote() || !R.session) return Promise.resolve(null);
+
+    if (!peerWired) {
+      peerWired = true;
+      LC.webrtc.on('remote-stream', function (stream) {
+        var video = document.getElementById('remote-video');
+        if (video) {
+          video.srcObject = stream;
+          var play = video.play();
+          if (play && play.catch) play.catch(function () { /* autoplay policy */ });
+        }
+        R.hasRemoteStream = true;
+        syncRemoteTile();
+      });
+      LC.webrtc.on('state', function (info) {
+        R.peerState = info.state;
+        if (info.state === 'closed' || info.state === 'failed') R.hasRemoteStream = false;
+        paintRemoteState(info);
+        if (info.state === 'failed') {
+          LC.app.toast('err', 'Could not connect to the other participant',
+            info.turn
+              ? 'The connection failed even through TURN. Ask them to rejoin.'
+              : 'No TURN server is configured, so a direct route is the only option here. '
+                + 'Set TURN_URLS on the server for participants behind strict NAT.');
+        }
+      });
+      LC.webrtc.on('error', function (err) {
+        if (window.console) console.warn('[LogicClass+] webrtc:', err && err.message);
+      });
+    }
+
+    var me = LC.data.currentUser();
+    return LC.webrtc.create({
+      sessionId: R.session.id,
+      stream: R.stream,
+      // Deterministic roles: the student rolls back on a collision.
+      polite: me.id === R.session.studentId,
+      peerSocket: peerSocket
+    });
+  }
+
+  function showRemoteVideo(on) {
+    var video = document.getElementById('remote-video');
+    var canvas = document.getElementById('peer-canvas');
+    if (video) video.classList.toggle('hide', !on);
+    if (canvas) canvas.classList.toggle('hide', on);
+  }
+
+  /**
+   * The remote track and the 'connected' state arrive in either order, so the
+   * tile is derived from both rather than toggled by whichever lands last.
+   */
+  function syncRemoteTile() {
+    showRemoteVideo(Boolean(R.hasRemoteStream) && R.peerState === 'connected');
+  }
+
+  function paintRemoteState(info) {
+    var el = document.getElementById('remote-state');
+    if (!el) return;
+    var map = {
+      connecting: ['warn', 'Connecting'], reconnecting: ['warn', 'Reconnecting'],
+      connected: ['ok', 'Connected'], disconnected: ['warn', 'Dropped'],
+      failed: ['crit', 'Failed'], closed: ['neutral', 'Ended']
+    };
+    var m = map[info.state];
+    el.innerHTML = m ? '<span class="pill pill-' + m[0] + '"><i class="dot"></i>' + m[1] + '</span>' : '';
+    syncRemoteTile();
+    paintPeerFrame();
+  }
+
   /* ========================= tab bodies ========================= */
   function renderTab() {
     var body = document.getElementById('tab-body');
@@ -409,6 +529,7 @@
     if (R.tab === 'equations') renderMath();
     if (R.tab === 'document') initDoc();
     if (R.tab === 'speech') drawWave();
+    if (R.tab === 'notes') paintRecordingPanel();
   }
 
   function palette(prefix, cur) {
@@ -434,8 +555,11 @@
       '<button class="btn btn-sm btn-primary" data-act="board-save">Save to library</button>' +
       '</div>' +
       '<div class="board-wrap" id="board-wrap"><canvas id="board-canvas"></canvas></div>' +
-      '<p class="small dim">Strokes are kept as vectors, so undo and resize stay sharp. In production each stroke is broadcast on ' +
-      '<span class="mono">classroom:board:stroke</span> over the room\'s socket channel.</p>' +
+      '<p class="small dim">Strokes are kept as vectors, so undo and resize stay sharp. ' +
+      (LC.data.isRemote()
+        ? 'Each finished stroke is broadcast on <span class="mono">classroom:board:stroke</span> and lands on your student\'s board.'
+        : 'Connect a server and each stroke broadcasts on <span class="mono">classroom:board:stroke</span> to the other participant.') +
+      '</p>' +
       '</div>';
   }
 
@@ -500,8 +624,10 @@
       '<button class="btn btn-sm" data-act="doc-correct">Mark a correction</button>' +
       '</div>' +
       '<div class="editor" id="doc-editor" contenteditable="true" spellcheck="true">' + html + '</div>' +
-      '<p class="small dim">Production uses Tiptap with a Yjs document shared over <span class="mono">y-socket.io</span>, so both cursors and ' +
-      'offline edits merge without conflicts. Here the text is local to your browser.</p>' +
+      '<p class="small dim">' + (LC.data.isRemote()
+        ? 'Saving stores this document with the session. Live co-editing needs Tiptap with a Yjs document over ' +
+          '<span class="mono">classroom:doc:update</span> — the relay is in place, the CRDT is not wired yet.'
+        : 'No server is connected, so the text stays in this browser.') + '</p>' +
       '</div>';
   }
 
@@ -545,11 +671,60 @@
           '<button class="btn btn-primary" data-act="end-session">End and mark complete</button>' +
           '<button class="btn" data-act="mark-noshow">Student did not show</button></div>'
         : '') +
-      '<div class="flag"><b>Recording needs a media server</b><div>Browser-to-browser WebRTC gives the server no stream to record. ' +
-      'The Record button here captures <i>your own</i> tracks with <span class="mono">MediaRecorder</span> and keeps the clip in the tab. ' +
-      'Server-side recording into <span class="mono">ClassSession.recordingUrl</span> needs an SFU — LiveKit, mediasoup, or a managed service — ' +
-      'which the handoff lists as a decision for you to make.</div></div>' +
+      '<section class="panel stack" id="recording-panel">' +
+      '<div class="row-between"><span class="eyebrow">Class recording</span>' +
+      '<span class="small dim mono" id="rec-state">checking…</span></div>' +
+      '<div id="rec-body"><span class="small dim">Working out what this session would occupy…</span></div>' +
+      '</section>' +
       '</div>';
+  }
+
+  /* ====================== recording panel ====================== */
+  function paintRecordingPanel() {
+    var body = document.getElementById('rec-body');
+    var state = document.getElementById('rec-state');
+    if (!body || !R.session) return;
+    var minutes = R.session.minutes;
+    var me = LC.data.currentUser();
+
+    LC.data.estimateRecording(minutes).then(function (info) {
+      if (!document.getElementById('rec-body')) return;
+      if (state) state.textContent = info.configured ? 'media server ready' : 'not configured';
+
+      var rows = Object.keys(info.presets || {}).map(function (key) {
+        var p = info.presets[key];
+        var active = key === info.preset;
+        return '<div class="row-between"' + (active ? ' style="font-weight:600"' : '') + '>' +
+          '<span class="' + (active ? '' : 'muted') + '">' + esc(p.label || key) +
+          (active ? ' <span class="pill pill-neutral">selected</span>' : '') + '</span>' +
+          '<span class="mono">' + F.bytes(p.bytes) + '</span></div>';
+      }).join('');
+
+      body.innerHTML =
+        '<div class="stack" style="gap:10px">' +
+        '<div class="row-between"><span class="muted">This session</span>' +
+        '<span class="mono" style="font-weight:600">' + minutes + ' min → ' + F.bytes(info.bytes) + '</span></div>' +
+        '<div class="panel" style="background:var(--card)">' + rows + '</div>' +
+        (info.configured
+          ? (me.role === 'teacher' || me.role === 'owner'
+              ? '<div class="row" style="gap:8px">' +
+                (R.roomRecording
+                  ? '<button class="btn btn-danger" data-act="stop-class-recording">Stop recording</button>'
+                  : '<button class="btn btn-primary" data-act="start-class-recording">Start recording</button>') +
+                '</div><p class="small dim">The media server composites both participants and uploads the file ' +
+                'straight to object storage. Both of you are notified whenever recording starts.</p>'
+              : '<p class="small dim">Only your teacher can start a recording. You are told whenever one starts.</p>')
+          : '<div class="flag"><b>Recording is off</b><div>' + esc(info.reason || '') + '</div></div>') +
+        (R.session.recordingUrl
+          ? '<div class="row-between"><span class="muted">Saved recording</span>' +
+            '<span class="mono small">' + esc(String(R.session.recordingUrl).slice(0, 48)) + '</span></div>'
+          : '') +
+        '<p class="small dim">Your own <b>Record</b> button in the controls is different: it captures only ' +
+        '<i>your</i> camera and microphone with <span class="mono">MediaRecorder</span> and keeps the clip in this tab.</p>' +
+        '</div>';
+    }).catch(function (err) {
+      body.innerHTML = '<div class="flag"><b>Could not read the recording settings</b><div>' + esc(err.message) + '</div></div>';
+    });
   }
 
   /* ========================= canvas board ========================= */
@@ -887,9 +1062,13 @@
       R.picked.cam = cam && cam.value || '';
       R.picked.mic = mic && mic.value || '';
       LC.app.closeModal();
-      getStream().then(function () {
+      getStream().then(function (stream) {
         attachStream();
-        LC.app.toast('ok', 'Devices switched', 'Now using your selected camera and microphone.');
+        return LC.webrtc.replaceTracks(stream).then(function (swapped) {
+          LC.app.toast('ok', 'Devices switched', swapped
+            ? 'The far side saw no interruption — the track was replaced on the live connection.'
+            : 'Now using your selected camera and microphone.');
+        });
       }).catch(function (err) { LC.app.toast('err', 'Could not switch', describeMediaError(err)); });
     },
     'toggle-record': function (el) {
@@ -919,7 +1098,7 @@
             'A real class recording — both participants, mixed — has to be produced by an SFU or a managed media service.</div></div>', '');
           paintState();
           var b = document.querySelector('[data-act="toggle-record"]');
-          if (b) { b.textContent = 'Record'; b.classList.remove('btn-danger'); }
+          if (b) { b.textContent = 'Record me'; b.classList.remove('btn-danger'); }
         };
         R.recorder.start();
         R.recording = true;
@@ -1007,6 +1186,31 @@
           ? 'Saved to the session record in PostgreSQL.'
           : 'Kept in this browser. Connect a server to share it.');
       }).catch(function (err) { LC.app.toast('err', 'Not saved', err.message); });
+    },
+    'start-class-recording': function (el) {
+      el.disabled = true;
+      LC.data.startRecording(R.session.id).then(function (r) {
+        R.roomRecording = true;
+        paintState();
+        paintRecordingPanel();
+        LC.app.toast('ok', 'Recording started',
+          'Expected size for this session: ' + F.bytes(r.estimatedBytes) + ' at ' + r.preset + '.');
+      }).catch(function (err) {
+        el.disabled = false;
+        LC.app.toast('err', 'Recording did not start', err.message);
+      });
+    },
+    'stop-class-recording': function (el) {
+      el.disabled = true;
+      LC.data.stopRecording(R.session.id).then(function (r) {
+        R.roomRecording = false;
+        paintState();
+        paintRecordingPanel();
+        LC.app.toast('ok', 'Recording stopped', r.note || 'The media server is finishing the upload.');
+      }).catch(function (err) {
+        el.disabled = false;
+        LC.app.toast('err', 'Could not stop the recording', err.message);
+      });
     },
     'voice-record': function () { voiceRecord(); },
     'voice-analyse': function () { analyseSpeech(); },

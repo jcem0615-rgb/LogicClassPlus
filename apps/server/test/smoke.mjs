@@ -51,12 +51,15 @@ ok('student cannot approve (403)', studentApprove.status === 403);
 
 console.log('\n3. Library + multi-tenant isolation');
 const folders = await call('/library/folders', { token: daniel.token });
-ok('teacher lists own folders', folders.json.folders.length === 2, JSON.stringify(folders.json.folders.map(f=>f.name)));
+// The suite adds a folder each run, so assert the seeded ones are present
+// rather than assuming a pristine database.
+const folderNames = folders.json.folders.map(f => f.name);
+ok('teacher lists own folders', ['Quadratics','Differentiation'].every(n => folderNames.includes(n)), JSON.stringify(folderNames));
 ok('only own folders returned', folders.json.folders.every(f => f.teacherId === daniel.user.id));
 const danielFolder = folders.json.folders[0];
 const crossRead = await call(`/library/folders/${danielFolder.id}/resources`, { token: hana.token });
 ok('other teacher gets 404 on the folder id', crossRead.status === 404, JSON.stringify(crossRead.json));
-const newFolder = await call('/library/folders', { method:'POST', token: daniel.token, body:{ name:'Trigonometry', subject:'math' } });
+const newFolder = await call('/library/folders', { method:'POST', token: daniel.token, body:{ name:'Trigonometry ' + Date.now(), subject:'math' } });
 ok('creates folder', newFolder.status === 201);
 const studentFolder = await call('/library/folders', { method:'POST', token: amira.token, body:{ name:'Nope', subject:'math' } });
 ok('student cannot create folder (403)', studentFolder.status === 403);

@@ -41,7 +41,9 @@ export function initGateway(server: HttpServer): Server {
       const allowed = await canEnter(user, sessionId);
       if (!allowed) { ack?.({ error: 'You are not part of that session.' }); return; }
       await socket.join(classRoom(sessionId));
-      socket.to(classRoom(sessionId)).emit('classroom:peer-joined', { userId: user.id, name: user.name });
+      socket.to(classRoom(sessionId)).emit('classroom:peer-joined', {
+        userId: user.id, name: user.name, socketId: socket.id,
+      });
       const peers = await peersIn(sessionId, socket.id);
       ack?.({ ok: true, peers });
     });
@@ -56,7 +58,7 @@ export function initGateway(server: HttpServer): Server {
        ICE candidates the two browsers need to connect directly. */
     socket.on('classroom:signal', (payload: { sessionId: string; to?: string; data: unknown }) => {
       if (!payload?.sessionId) return;
-      const envelope = { from: user.id, data: payload.data };
+      const envelope = { from: user.id, fromSocket: socket.id, data: payload.data };
       if (payload.to) io?.to(payload.to).emit('classroom:signal', envelope);
       else socket.to(classRoom(payload.sessionId)).emit('classroom:signal', envelope);
     });

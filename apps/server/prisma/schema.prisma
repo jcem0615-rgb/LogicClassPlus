@@ -209,7 +209,12 @@ model ClassSession {
   status       SessionStatus @default(SCHEDULED)
   joinedAt     DateTime?
   endedAt      DateTime?
-  recordingUrl String? // filled by an SFU/media server; P2P WebRTC cannot produce this
+  // Recording is produced by the media server, not the browsers. P2P WebRTC
+  // gives the server no stream, so these stay null until an SFU fills them.
+  recordingUrl     String?
+  recordingEgressId String?
+  recordingBytes   BigInt?
+  recordingSeconds Int?
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 

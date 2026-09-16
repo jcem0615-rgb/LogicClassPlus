@@ -564,6 +564,43 @@
     return api.post('/billing/invoices/' + id + '/remind', {}).then(refresh);
   }
 
+  /* ========================== recording ========================== */
+  /**
+   * What a recording of this session would occupy. Available in demo mode too,
+   * because the arithmetic is the same whether or not a media server exists.
+   */
+  var PRESET_BPS = {
+    audio: 48e3, '360p': 448e3, '480p': 748e3, '720p': 1548e3, '1080p': 4064e3
+  };
+
+  function estimateRecording(minutes, preset) {
+    var local = {
+      minutes: minutes, preset: preset || '720p', configured: false,
+      bytes: Math.round(PRESET_BPS[preset || '720p'] * minutes * 60 / 8 * 1.03),
+      presets: Object.keys(PRESET_BPS).reduce(function (all, key) {
+        all[key] = { label: key, bytes: Math.round(PRESET_BPS[key] * minutes * 60 / 8 * 1.03) };
+        return all;
+      }, {}),
+      reason: 'No server is connected, so nothing can be recorded — this is the size it would be.'
+    };
+    if (!isRemote()) return Promise.resolve(local);
+    return api.get('/recordings/estimate?minutes=' + minutes + (preset ? '&preset=' + preset : ''))
+      .catch(function () { return local; });
+  }
+
+  function startRecording(sessionId) {
+    if (!isRemote()) {
+      return Promise.reject(new Error(
+        'Recording happens on the media server, and no server is connected.'));
+    }
+    return api.post('/recordings/' + sessionId + '/start', {});
+  }
+
+  function stopRecording(sessionId) {
+    if (!isRemote()) return Promise.reject(new Error('No server is connected.'));
+    return api.post('/recordings/' + sessionId + '/stop', {});
+  }
+
   /* ========================== notifications ========================== */
   function markNotificationsRead() {
     if (!isRemote()) { S.markAllRead(S.currentUser().id); return resolved; }
@@ -609,6 +646,7 @@
     loadSession: loadSession, saveDocument: saveDocument, sendChat: sendChat,
     clockIn: clockIn, clockOut: clockOut, markNoShow: markNoShow,
     runPayrollBatch: runPayrollBatch, payInvoice: payInvoice, remindInvoice: remindInvoice,
-    markNotificationsRead: markNotificationsRead, subscribePush: subscribePush
+    markNotificationsRead: markNotificationsRead, subscribePush: subscribePush,
+    estimateRecording: estimateRecording, startRecording: startRecording, stopRecording: stopRecording
   };
 })();

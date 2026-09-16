@@ -13,6 +13,9 @@ const schema = z.object({
 
   JWT_SECRET: z.string().min(24, 'JWT_SECRET must be at least 24 characters'),
   JWT_EXPIRES_IN: z.string().default('7d'),
+  // Sign-in attempts per IP per 15 minutes. Deliberately strict in production;
+  // a looser default in development keeps local work and tests from tripping it.
+  AUTH_RATE_LIMIT: z.coerce.number().int().positive().optional(),
 
   SEED_OWNER_EMAIL: z.string().email().default('owner@logicclass.plus'),
   SEED_OWNER_PASSWORD: z.string().min(8).default('admin1234'),
@@ -34,6 +37,19 @@ const schema = z.object({
 
   STRIPE_SECRET_KEY: z.string().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().optional(),
+
+  STUN_URLS: z.string().default('stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302'),
+  TURN_URLS: z.string().default(''),
+  TURN_STATIC_SECRET: z.string().optional(),
+  TURN_USERNAME: z.string().optional(),
+  TURN_PASSWORD: z.string().optional(),
+  TURN_TTL_SECONDS: z.coerce.number().int().positive().default(6 * 3600),
+
+  RECORDING_PROVIDER: z.enum(['none', 'livekit']).default('none'),
+  RECORDING_PRESET: z.enum(['audio', '360p', '480p', '720p', '1080p']).default('720p'),
+  LIVEKIT_URL: z.string().optional(),
+  LIVEKIT_API_KEY: z.string().optional(),
+  LIVEKIT_API_SECRET: z.string().optional(),
 
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),

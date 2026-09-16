@@ -29,7 +29,11 @@ const createRequest = z.object({
   topic: z.string().trim().min(3, 'Describe what you want to work on.').max(160),
   note: z.string().trim().max(600).optional(),
   requestedFor: z.coerce.date(),
-  minutes: z.union([z.literal(30), z.literal(45), z.literal(60), z.literal(90)]).default(60),
+  // 15 minutes to 8 hours, in quarter-hour steps: intensives and exam-prep
+  // blocks run far longer than a standard lesson.
+  minutes: z.number().int().min(15).max(480)
+    .refine((m) => m % 15 === 0, 'Book in 15-minute steps.')
+    .default(60),
 });
 
 classesRouter.post('/requests', requireRole('STUDENT'), validate(createRequest),

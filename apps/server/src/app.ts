@@ -17,6 +17,9 @@ import { payrollRouter } from './routes/payroll.js';
 import { billingRouter } from './routes/billing.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
+import { realtimeRouter } from './routes/realtime.js';
+import { recordingsRouter, recordingWebhookRouter } from './routes/recordings.js';
+import { isRecordingConfigured } from './services/recording.js';
 
 export function createApp() {
   const app = express();
@@ -32,8 +35,10 @@ export function createApp() {
     credentials: true,
   }));
 
-  // Stripe verifies a signature over the raw body, so this must precede express.json().
+  // Both webhooks verify a signature over the raw body, so they must precede
+  // express.json(), which would otherwise consume and re-serialise it.
   app.use('/api/stripe/webhook', stripeWebhookRouter);
+  app.use('/api/recordings/webhook', recordingWebhookRouter);
 
   app.use(express.json({ limit: '30mb' }));
   app.use(cookieParser());
@@ -48,6 +53,7 @@ export function createApp() {
         stripe: isStripeConfigured(),
         webPush: isPushConfigured(),
         s3: isS3Configured(),
+        recording: isRecordingConfigured(),
       },
       policy: {
         uploadMaxBytes: env.UPLOAD_MAX_BYTES,
@@ -67,6 +73,8 @@ export function createApp() {
   app.use('/api/payroll', payrollRouter);
   app.use('/api/billing', billingRouter);
   app.use('/api/notifications', notificationsRouter);
+  app.use('/api/realtime', realtimeRouter);
+  app.use('/api/recordings', recordingsRouter);
 
   app.use((req, res) => {
     res.status(404).json({ error: { message: `No route for ${req.method} ${req.path}`, code: 'not_found' } });
