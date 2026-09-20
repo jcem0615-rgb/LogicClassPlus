@@ -10,7 +10,7 @@ billing. Built from the handoff in [`CLAUDE.md`](./CLAUDE.md).
 LogicClass-Plus/
 ├── apps/
 │   ├── server/   Node + Express + Socket.io + Prisma — API, realtime, signalling
-│   └── pwa/      the PWA client — static, no build step
+│   └── pwa/      the PWA client — static; only the editor bundle is built
 ├── docs/         status against the build phases, API and socket reference
 └── package.json  npm workspaces root
 ```
@@ -47,13 +47,27 @@ is Teacher/Student only and new accounts sit at `PENDING` until the Owner
 approves them.
 
 To see a real two-person classroom, sign in as the teacher in one browser and the
-student in another, and open the same session.
+student in another, and open the same session: peer-to-peer video and audio, a
+whiteboard that draws on both screens, and a shared document you can type into
+from both sides at once with each other's cursors visible.
+
+The client needs no build to run. The one generated file is
+`apps/pwa/vendor/editor.bundle.js` — Tiptap, ProseMirror and Yjs bundled with
+esbuild and committed, so the app pulls nothing from a CDN. Rebuild it after
+changing `apps/pwa/src/editor-entry.js`:
+
+```bash
+npm run -w apps/pwa build
+```
+
+It is loaded only when a shared document is opened, so demo mode never downloads it.
 
 ## Tests
 
 ```bash
 npm run -w apps/server typecheck
-node apps/server/test/smoke.mjs      # needs the server running
+node apps/server/test/smoke.mjs      # API + sockets, needs the server running
+node apps/server/test/collab.mjs    # live co-editing, needs both servers running
 ```
 
 `test/smoke.mjs` drives the whole API as four different users: auth and role
@@ -61,6 +75,11 @@ gates, the approval flow, cross-teacher isolation, upload rejection, the
 request → session → attendance → payroll chain, billing, announcement fan-out,
 and a live Socket.io session that checks a WebRTC offer is relayed between two
 sockets and that chat lands in Postgres. 59 assertions.
+
+`test/collab.mjs` drives two real browsers into one document: it types from both
+sides at once and asserts the documents converge with nothing lost, that each
+sees the other's caret, that the result is written to Postgres as a Yjs state,
+and that reopening the room restores it. 11 assertions.
 
 ## What the server enforces
 
@@ -107,8 +126,6 @@ stack and why. In short:
   a 3-hour class is about **2.15 GB** at 720p, 67 MB audio-only.
 - **Pronunciation scoring needs a speech API.** The waveform is real; the
   per-phoneme scores are a labelled placeholder.
-- **Live co-editing.** The shared document saves per session, but Tiptap + Yjs
-  over the existing `classroom:doc:update` relay is not wired. Largest remaining
-  gap against the spec.
 - **`apps/web` (Next.js) was not built.** `apps/pwa` carries the full feature
-  surface as a dependency-free static PWA.
+  surface as a static PWA, with Tiptap and Yjs bundled in rather than pulled
+  from a CDN.

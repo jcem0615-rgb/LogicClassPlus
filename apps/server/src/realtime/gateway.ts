@@ -5,6 +5,7 @@ import { ALLOWED_ORIGINS } from '../env.js';
 import { prisma } from '../prisma.js';
 import { verifyToken } from '../lib/jwt.js';
 import { publicMessage } from '../lib/serialize.js';
+import * as collab from './collab.js';
 
 interface SocketUser { id: string; role: Role; name: string }
 
@@ -76,13 +77,27 @@ export function initGateway(server: HttpServer): Server {
       socket.to(classRoom(payload.sessionId)).emit('classroom:board:clear', { from: user.id });
     });
 
-    /* Tiptap + Yjs transport. Updates are opaque binary blobs to the server;
-       it fans them out and the CRDT on each client merges them. */
-    socket.on('classroom:doc:update', (payload: { sessionId: string; update: unknown }) => {
-      if (!payload?.sessionId) return;
-      socket.to(classRoom(payload.sessionId)).emit('classroom:doc:update', {
-        from: user.id, update: payload.update,
-      });
+    /* ---------------- Tiptap + Yjs -----------------
+       The server holds the authoritative Y.Doc: it merges every update, serves
+       late joiners the current state, and persists to Postgres. Messages are
+       the standard y-protocols sync and awareness frames. */
+    socket.on('classroom:doc:open', async (sessionId: string, ack?: (r: unknown) => void) => {
+      if (!(await canEnter(user, sessionId))) { ack?.({ error: 'Not your session.' }); return; }
+      await collab.join(sessionId, socket.id);
+      socket.emit('classroom:doc:message', { sessionId, data: await collab.syncStep1(sessionId) });
+      const cursors = await collab.awarenessSnapshot(sessionId);
+      if (cursors) socket.emit('classroom:doc:message', { sessionId, data: cursors });
+      ack?.({ ok: true });
+    });
+
+    socket.on('classroom:doc:message', async (payload: { sessionId: string; data: ArrayBuffer }) => {
+      if (!payload?.sessionId || !payload.data) return;
+      if (!(await canEnter(user, payload.sessionId))) return;
+      await collab.handleMessage(payload.sessionId, socket.id, payload.data);
+    });
+
+    socket.on('classroom:doc:close', (sessionId: string) => {
+      if (sessionId) collab.leave(sessionId, socket.id);
     });
 
     socket.on('classroom:presence', (payload: { sessionId: string; state: unknown }) => {
@@ -117,11 +132,22 @@ export function initGateway(server: HttpServer): Server {
 
     socket.on('disconnecting', () => {
       for (const room of socket.rooms) {
-        if (room.startsWith('classroom:')) {
-          socket.to(room).emit('classroom:peer-left', { userId: user.id });
-        }
+        if (!room.startsWith('classroom:')) continue;
+        socket.to(room).emit('classroom:peer-left', { userId: user.id });
+        collab.leave(room.slice('classroom:'.length), socket.id);
       }
     });
+  });
+
+  collab.setBroadcaster({
+    toRoom(sessionId, message, exceptSocketId) {
+      const payload = { sessionId, data: message };
+      if (exceptSocketId) io?.except(exceptSocketId).to(classRoom(sessionId)).emit('classroom:doc:message', payload);
+      else io?.to(classRoom(sessionId)).emit('classroom:doc:message', payload);
+    },
+    toSocket(socketId, message) {
+      io?.to(socketId).emit('classroom:doc:message', { sessionId: '', data: message });
+    },
   });
 
   return io;

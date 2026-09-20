@@ -18,7 +18,7 @@ the tiebreaker, exactly as the handoff says.
 | 3 | Realtime spine — Socket.io gateway, Notification model, in-app + Web Push, class-request → accept | **Done.** JWT handshake, per-user rooms, `notification:*`; Web Push sends when VAPID keys are set. |
 | 4 | WebRTC classroom shell — hardware check, device switching, signalling, join/leave | **Done.** Peer connection included: two browsers reach `connected` with media both ways, verified repeatedly. Device switching uses `replaceTrack`, so the far side sees no break. TURN credentials are minted per request from `GET /api/realtime/ice`. |
 | 5 | Math suite — whiteboard synced over the room channel, PDF/image annotation, KaTeX | **Done**, with one substitution noted below. Strokes broadcast on `classroom:board:stroke` and persist to `SessionDocument`. |
-| 6 | English suite — collaborative doc, audio recorder, pronunciation stub | **Partly.** Rich-text editor with presence, saved per session; recorder measures a real amplitude envelope. Yjs CRDT transport and the scoring provider are open — see below. |
+| 6 | English suite — collaborative doc, audio recorder, pronunciation stub | **Done**, bar the scoring provider. Tiptap on a shared Yjs document with live cursors, merged and persisted by the server. The recorder measures a real amplitude envelope; per-phoneme scoring still needs a speech API. |
 | 7 | Attendance & payroll | **Done.** Clock in/out, grace window, late penalty, no-show forfeit, batch generation with frozen figures. |
 | 8 | Billing | **Done.** Invoices, PaymentIntent creation, signature-verified `payment_intent.succeeded` webhook. Needs your Stripe keys. |
 | 9 | Recording | **Decided and wired, not proven.** LiveKit Egress: control plane, signed webhook, storage accounting and consent notices are written and type-checked, but there was no live LiveKit server to test against, and the browsers still connect peer-to-peer so nothing flows through the SFU yet. See [`recording.md`](./recording.md). |
@@ -52,15 +52,16 @@ The handoff says *do not substitute* the stack. Three departures, each deliberat
    served as a static PWA and hosted anywhere. The stroke model is vector-based,
    broadcasts per stroke, and persists as JSON — swapping Excalidraw in later
    means replacing one tab, not the architecture.
-2. **The collaborative document is a rich-text editor with presence, not
-   Tiptap + Yjs.** The socket transport it needs is already in place
-   (`classroom:doc:update` relays opaque binary updates, which is exactly what
-   y-socket.io carries) and documents persist per session. Wiring Yjs is a
-   client-side change with no server work. This is the largest remaining gap
-   against the spec.
+2. **Tiptap + Yjs run over the room's own Socket.io channel, not the
+   `y-socket.io` package.** Same transport, same y-protocols frames; the
+   difference is that `y-socket.io` mounts its own dynamic namespace with
+   separate auth, whereas this rides the channel whose session membership the
+   gateway has already verified. It also let the server keep the authoritative
+   document and persist it to Postgres, which a relay cannot do.
 3. **The client is a static PWA, not Next.js App Router.** `apps/web` as
    specified does not exist. What is here is `apps/pwa`: the full feature
-   surface, no build step. If you want the Next.js version, this is the
+   surface, with one bundled file (Tiptap, ProseMirror and Yjs) and no
+   framework build. If you want the Next.js version, this is the
    reference implementation to port — the API it talks to will not change.
 
 One correction the build forced, worth knowing about: `ClassRequest.minutes`

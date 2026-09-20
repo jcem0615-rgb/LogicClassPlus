@@ -11,7 +11,7 @@
   var S = LC.store, F = LC.fmt, esc = LC.esc;
 
   var R = {
-    session: null, peerPresent: false, loaded: null, peerState: null, hasRemoteStream: false, roomRecording: false, stream: null, audioCtx: null, analyser: null, raf: null,
+    session: null, peerPresent: false, loaded: null, peerState: null, hasRemoteStream: false, roomRecording: false, editor: null, provider: null, stream: null, audioCtx: null, analyser: null, raf: null,
     devices: { cams: [], mics: [], outs: [] },
     picked: { cam: '', mic: '' },
     joined: false, tab: 'whiteboard', camOn: true, micOn: true,
@@ -386,6 +386,7 @@
   }
 
   function teardown() {
+    destroyLiveDoc();
     LC.webrtc.stop();
     R.hasRemoteStream = false;
     R.peerState = null;
@@ -522,6 +523,7 @@
   function renderTab() {
     var body = document.getElementById('tab-body');
     if (!body) return;
+    if (R.tab !== 'document') destroyLiveDoc();
     var map = { whiteboard: tabWhiteboard, annotate: tabAnnotate, equations: tabEquations, document: tabDocument, speech: tabSpeech, notes: tabNotes };
     body.innerHTML = (map[R.tab] || tabNotes)();
     if (R.tab === 'whiteboard') initBoard('board', R.board);
@@ -602,16 +604,11 @@
   }
 
   function tabDocument() {
-    var key = 'doc_' + R.session.id;
-    var html = (R.loaded && R.loaded.document) || S.db.docs[key] || '<h2>Essay plan — describing a place</h2>' +
-      '<p>Choose <b>one</b> place you know well. Write four sentences: where it is, what you do there, who you go with, and why it matters to you.</p>' +
-      '<ul><li>Where: <i>the night market two streets from my grandmother\'s flat</i></li>' +
-      '<li>What: …</li><li>Who: …</li><li>Why: …</li></ul>';
-    var other = S.userById(LC.data.currentUser().id === R.session.teacherId ? R.session.studentId : R.session.teacherId);
-    return '<div class="stack" style="gap:10px">' +
-      '<div class="row-between"><div class="row"><span class="presence"><i class="dot"></i>' + esc(other.name.split(' ')[0]) + ' · joined</span>' +
-      '<span class="small dim mono" id="doc-count">0 words</span></div>' +
-      '<button class="btn btn-sm btn-primary" data-act="doc-save">Save document</button></div>' +
+    var live = LC.data.isRemote();
+    var other = S.userById(LC.data.currentUser().id === R.session.teacherId
+      ? R.session.studentId : R.session.teacherId);
+
+    var toolbar =
       '<div class="toolbar" style="border-radius:var(--r-sm) var(--r-sm) 0 0;border-bottom:0">' +
       '<button class="btn btn-sm" data-act="doc-cmd" data-cmd="bold"><b>B</b></button>' +
       '<button class="btn btn-sm" data-act="doc-cmd" data-cmd="italic"><i>I</i></button>' +
@@ -622,12 +619,40 @@
       '<button class="btn btn-sm" data-act="doc-cmd" data-cmd="insertOrderedList">Numbered</button>' +
       '<span class="sep"></span>' +
       '<button class="btn btn-sm" data-act="doc-correct">Mark a correction</button>' +
-      '</div>' +
+      (live ? '<span class="sep"></span><button class="btn btn-sm" data-act="doc-undo">Undo</button>' +
+              '<button class="btn btn-sm" data-act="doc-redo">Redo</button>' : '') +
+      '</div>';
+
+    if (live) {
+      return '<div class="stack" style="gap:10px">' +
+        '<div class="row-between"><div class="row" id="doc-presence">' +
+        '<span class="presence"><i class="dot"></i>connecting…</span></div>' +
+        '<span class="small dim mono" id="doc-count">0 words</span></div>' +
+        toolbar +
+        '<div id="doc-editor-host" class="editor-host"></div>' +
+        '<p class="small dim">Live co-editing: every keystroke is a Yjs update merged by the server, which ' +
+        'keeps the document and writes it to PostgreSQL. Edit it from both sides at once — there is nothing to ' +
+        'overwrite, and undo is per person.</p>' +
+        '</div>';
+    }
+
+    var key = 'doc_' + R.session.id;
+    var html = (R.loaded && R.loaded.document) || S.db.docs[key] ||
+      '<h2>Essay plan — describing a place</h2>' +
+      '<p>Choose <b>one</b> place you know well. Write four sentences: where it is, what you do there, ' +
+      'who you go with, and why it matters to you.</p>' +
+      '<ul><li>Where: <i>the night market two streets from my grandmother\'s flat</i></li>' +
+      '<li>What: …</li><li>Who: …</li><li>Why: …</li></ul>';
+
+    return '<div class="stack" style="gap:10px">' +
+      '<div class="row-between"><div class="row"><span class="presence"><i class="dot"></i>' +
+      esc(other.name.split(' ')[0]) + ' · offline</span>' +
+      '<span class="small dim mono" id="doc-count">0 words</span></div>' +
+      '<button class="btn btn-sm btn-primary" data-act="doc-save">Save document</button></div>' +
+      toolbar +
       '<div class="editor" id="doc-editor" contenteditable="true" spellcheck="true">' + html + '</div>' +
-      '<p class="small dim">' + (LC.data.isRemote()
-        ? 'Saving stores this document with the session. Live co-editing needs Tiptap with a Yjs document over ' +
-          '<span class="mono">classroom:doc:update</span> — the relay is in place, the CRDT is not wired yet.'
-        : 'No server is connected, so the text stays in this browser.') + '</p>' +
+      '<p class="small dim">No server is connected, so the text stays in this browser. Connect one and this ' +
+      'becomes a Tiptap editor on a shared Yjs document, with both cursors live.</p>' +
       '</div>';
   }
 
@@ -888,19 +913,126 @@
     }
   }
 
-  /* ========================= document ========================= */
+  /* ========================= document =========================
+     Two implementations behind one tab: a Tiptap editor on a shared Yjs
+     document when a server is connected, and a plain contenteditable when
+     there is nothing to share with. */
   function initDoc() {
-    var ed = document.getElementById('doc-editor');
-    if (!ed) return;
+    if (LC.data.isRemote()) {
+      LC.collab.load().then(function () {
+        if (R.tab === 'document') initLiveDoc();
+      }).catch(function (err) {
+        var host = document.getElementById('doc-editor-host');
+        if (host) {
+          host.innerHTML = '<div class="empty"><h3>Editor unavailable</h3><p>' + esc(err.message) + '</p></div>';
+        }
+      });
+      return;
+    }
+
+    var editor = document.getElementById('doc-editor');
+    if (!editor) return;
     var count = function () {
       var el = document.getElementById('doc-count');
-      if (el) {
-        var words = (ed.innerText || '').trim().split(/\s+/).filter(Boolean).length;
-        el.textContent = words + ' word' + (words === 1 ? '' : 's');
-      }
+      if (!el) return;
+      var words = (editor.innerText || '').trim().split(/\s+/).filter(Boolean).length;
+      el.textContent = words + ' word' + (words === 1 ? '' : 's');
     };
-    ed.addEventListener('input', count);
+    editor.addEventListener('input', count);
     count();
+  }
+
+  function initLiveDoc() {
+    var host = document.getElementById('doc-editor-host');
+    if (!host) return;
+
+    destroyLiveDoc();
+
+    var E = window.LCEditor;
+    var me = LC.data.currentUser();
+
+    var myColor = roomColor(me.id);
+    R.provider = LC.collab.open(R.session.id, { id: me.id, name: me.name, color: myColor }, {
+      onSynced: seedIfEmpty,
+      onError: function (err) {
+        LC.app.toast('err', 'Shared document unavailable', err.message);
+      }
+    });
+    if (!R.provider) return;
+
+    R.editor = new E.Editor({
+      element: host,
+      extensions: [
+        // Yjs owns undo history: per-person undo, and a shared stack would
+        // let one participant undo the other's typing.
+        E.StarterKit.configure({ history: false }),
+        E.Collaboration.configure({ document: R.provider.doc }),
+        E.CollaborationCursor.configure({
+          provider: R.provider,
+          user: { name: me.name, color: myColor }
+        })
+      ],
+      onUpdate: paintDocStatus,
+      onCreate: paintDocStatus
+    });
+
+    R.provider.awareness.on('change', paintDocStatus);
+    paintDocStatus();
+  }
+
+  /**
+   * A document written before live editing existed is stored as HTML, which
+   * the server will not load into a CRDT. Seed it once, from the teacher only,
+   * so two clients cannot both insert it.
+   */
+  function seedIfEmpty() {
+    if (!R.editor || !R.provider) return;
+    var me = LC.data.currentUser();
+    var legacy = R.loaded && R.loaded.document;
+    if (!legacy || me.id !== R.session.teacherId) return;
+    if (!R.editor.isEmpty) return;
+    R.editor.commands.setContent(legacy, false);
+  }
+
+  /** Teacher pine, student rust — the two suite colours, never the same. */
+  function roomColor(userId) {
+    return userId === R.session.teacherId ? '#0B6B62' : '#A8452B';
+  }
+
+  function paintDocStatus() {
+    var countEl = document.getElementById('doc-count');
+    if (countEl && R.editor) {
+      var words = R.editor.getText().trim().split(/\s+/).filter(Boolean).length;
+      countEl.textContent = words + ' word' + (words === 1 ? '' : 's');
+    }
+
+    var presence = document.getElementById('doc-presence');
+    if (!presence || !R.provider) return;
+    var me = LC.data.currentUser();
+    var states = [];
+    R.provider.awareness.getStates().forEach(function (state, clientId) {
+      if (clientId === R.provider.doc.clientID) return;
+      if (state && state.user) states.push(state.user);
+    });
+
+    presence.innerHTML =
+      '<span class="presence" style="color:' + roomColor(me.id) +
+      ';background:color-mix(in srgb,' + roomColor(me.id) + ' 14%,transparent)">' +
+      '<i class="dot"></i>You</span>' +
+      (states.length
+        ? states.map(function (u) {
+            return '<span class="presence" style="color:' + esc(u.color) +
+              ';background:color-mix(in srgb,' + esc(u.color) + ' 14%,transparent)">' +
+              '<i class="dot"></i>' + esc(u.name) + ' · editing</span>';
+          }).join('')
+        : '<span class="small dim">waiting for ' +
+          esc(S.userById(me.id === R.session.teacherId ? R.session.studentId : R.session.teacherId).name.split(' ')[0]) +
+          '</span>');
+  }
+
+  function destroyLiveDoc() {
+    if (R.editor) { try { R.editor.destroy(); } catch (e) {} R.editor = null; }
+    if (R.provider) { try { R.provider.destroy(); } catch (e) {} R.provider = null; }
   }
 
   /* ========================= pronunciation ========================= */
@@ -1170,17 +1302,31 @@
       LC.app.toast('ok', 'Sent to the whiteboard', 'The LaTeX source is written on the board — drag your pen to work through it.');
     },
     'doc-cmd': function (el) {
+      if (R.editor) {
+        var chain = R.editor.chain().focus();
+        var map = {
+          bold: 'toggleBold', italic: 'toggleItalic', underline: 'toggleBold',
+          insertUnorderedList: 'toggleBulletList', insertOrderedList: 'toggleOrderedList'
+        };
+        if (el.dataset.cmd === 'formatBlock') chain.toggleHeading({ level: 2 }).run();
+        else if (map[el.dataset.cmd]) chain[map[el.dataset.cmd]]().run();
+        return;
+      }
       var ed = document.getElementById('doc-editor');
       ed.focus();
       document.execCommand(el.dataset.cmd, false, el.dataset.val || null);
     },
     'doc-correct': function () {
+      if (R.editor) { R.editor.chain().focus().toggleStrike().run(); return; }
       var ed = document.getElementById('doc-editor');
       ed.focus();
       document.execCommand('hiliteColor', false, '#F8E7E1');
     },
+    'doc-undo': function () { if (R.editor) R.editor.chain().focus().undo().run(); },
+    'doc-redo': function () { if (R.editor) R.editor.chain().focus().redo().run(); },
     'doc-save': function () {
       var ed = document.getElementById('doc-editor');
+      if (!ed) return;
       LC.data.saveDocument(R.session.id, 'document', ed.innerHTML).then(function () {
         LC.app.toast('ok', 'Document saved', LC.data.isRemote()
           ? 'Saved to the session record in PostgreSQL.'
@@ -1236,5 +1382,7 @@
 
   LC.views.room = room;
   LC.roomActions = actions;
+  /** The live editor, for tests and debugging. Null outside the document tab. */
+  LC.roomEditor = function () { return R.editor; };
   LC.roomRepaintPeer = paintPeer;
 })();

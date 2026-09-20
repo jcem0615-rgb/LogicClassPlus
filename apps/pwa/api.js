@@ -124,6 +124,15 @@ window.LC = window.LC || {};
     state.handlers[event].push(fn);
   }
 
+  /** Detaches one handler. The socket-level listener stays; it dispatches to
+      whatever is left in the list, so other features keep working. */
+  function off(event, fn) {
+    var list = state.handlers[event];
+    if (!list) return;
+    var index = list.indexOf(fn);
+    if (index > -1) list.splice(index, 1);
+  }
+
   function emit(event, payload, ack) {
     if (state.socket) state.socket.emit(event, payload, ack);
   }
@@ -139,6 +148,6 @@ window.LC = window.LC || {};
     baseUrl: baseUrl, isConfigured: isConfigured, setServer: setServer,
     token: token, setToken: setToken, health: health,
     get: get, post: post, patch: patch, put: put, del: del,
-    connectSocket: connectSocket, on: on, emit: emit, disconnect: disconnect, socket: socket
+    connectSocket: connectSocket, on: on, off: off, emit: emit, disconnect: disconnect, socket: socket
   };
 })();

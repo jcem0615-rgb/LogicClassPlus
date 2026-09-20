@@ -4,6 +4,7 @@ import { isRecordingConfigured } from './services/recording.js';
 import { createApp } from './app.js';
 import { initGateway } from './realtime/gateway.js';
 import { disconnect, prisma } from './prisma.js';
+import { flushAll } from './realtime/collab.js';
 
 // Prisma returns BigInt for recording sizes, which JSON.stringify refuses.
 (BigInt.prototype as unknown as { toJSON(): number }).toJSON = function toJSON(this: bigint) {
@@ -35,7 +36,10 @@ async function main(): Promise<void> {
   const shutdown = (signal: string) => {
     // eslint-disable-next-line no-console
     console.log(`\n${signal} received, shutting down.`);
-    server.close(() => { void disconnect().then(() => process.exit(0)); });
+    // Save every open document before the process goes away.
+    server.close(() => {
+      void flushAll().then(disconnect).then(() => process.exit(0));
+    });
     setTimeout(() => process.exit(1), 8000).unref();
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
