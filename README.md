@@ -68,7 +68,13 @@ It is loaded only when a shared document is opened, so demo mode never downloads
 npm run -w apps/server typecheck
 node apps/server/test/smoke.mjs      # API + sockets, needs the server running
 node apps/server/test/collab.mjs    # live co-editing, needs both servers running
+node apps/server/test/speech.mjs   # pronunciation scoring against a stand-in Azure
+node apps/server/test/speech-ui.mjs # the drill, driven through a real browser
 ```
+
+The browser-driven tests need Playwright's chromium (`npx playwright install
+chromium`, or point `CHROMIUM_PATH` at an existing one). `speech.mjs` prints the
+environment to restart the API with so the scoring path is exercised.
 
 `test/smoke.mjs` drives the whole API as four different users: auth and role
 gates, the approval flow, cross-teacher isolation, upload rejection, the
@@ -80,6 +86,14 @@ sockets and that chat lands in Postgres. 59 assertions.
 sides at once and asserts the documents converge with nothing lost, that each
 sees the other's caret, that the result is written to Postgres as a Yjs state,
 and that reopening the room restores it. 11 assertions.
+
+`test/speech.mjs` runs a stand-in for Azure and asserts the request the real
+service would receive — subscription key, WAV content type, and the base64
+assessment header with phoneme granularity and miscue detection — then checks
+the response mapping, storage, and that a recording with no speech returns an
+error rather than a score. 27 assertions. `test/speech-ui.mjs` records through a
+real browser and verifies the audio arriving upstream is genuinely 16 kHz mono
+16-bit WAV. 11 assertions.
 
 ## What the server enforces
 
@@ -113,6 +127,8 @@ appear, and `GET /api/health` reports which are live:
 - **Stripe** — `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
 - **Web Push** — `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY`
   (`npx web-push generate-vapid-keys`). Subscriptions the browser drops are pruned.
+- **Azure Speech** — `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION`. Without them the
+  pronunciation drill records and shows a waveform but no score.
 
 ## What is still open
 
@@ -124,8 +140,10 @@ stack and why. In short:
   server to test against, and media still flows peer-to-peer, so nothing reaches
   the SFU yet. [`docs/recording.md`](./docs/recording.md) covers setup and sizing:
   a 3-hour class is about **2.15 GB** at 720p, 67 MB audio-only.
-- **Pronunciation scoring needs a speech API.** The waveform is real; the
-  per-phoneme scores are a labelled placeholder.
+- **Pronunciation scoring is wired to Azure Speech** but has not run against
+  the live service from here. [`docs/pronunciation.md`](./docs/pronunciation.md)
+  covers setup, cost and — importantly, since many of these students are
+  children — the privacy consequences of sending voice to a third party.
 - **`apps/web` (Next.js) was not built.** `apps/pwa` carries the full feature
   surface as a static PWA, with Tiptap and Yjs bundled in rather than pulled
   from a CDN.

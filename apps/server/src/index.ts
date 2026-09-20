@@ -1,6 +1,7 @@
 import { createServer } from 'node:http';
 import { env, isPushConfigured, isS3Configured, isStripeConfigured } from './env.js';
 import { isRecordingConfigured } from './services/recording.js';
+import { isSpeechConfigured } from './services/speech.js';
 import { createApp } from './app.js';
 import { initGateway } from './realtime/gateway.js';
 import { disconnect, prisma } from './prisma.js';
@@ -29,7 +30,8 @@ async function main(): Promise<void> {
       `  stripe     ${flag(isStripeConfigured())}\n` +
       `  web push   ${flag(isPushConfigured())}\n` +
       `  s3         ${flag(isS3Configured())} (falls back to ${env.LOCAL_UPLOAD_DIR})\n` +
-      `  recording  ${env.RECORDING_PROVIDER === 'none' ? 'off — needs an SFU' : flag(isRecordingConfigured())}\n`,
+      `  recording  ${env.RECORDING_PROVIDER === 'none' ? 'off — needs an SFU' : flag(isRecordingConfigured())}\n` +
+      `  speech     ${flag(isSpeechConfigured())}\n`,
     );
   });
 

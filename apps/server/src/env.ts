@@ -51,6 +51,16 @@ const schema = z.object({
   LIVEKIT_API_KEY: z.string().optional(),
   LIVEKIT_API_SECRET: z.string().optional(),
 
+  // --- Azure Speech (pronunciation assessment) ---
+  AZURE_SPEECH_KEY: z.string().optional(),
+  AZURE_SPEECH_REGION: z.string().optional(),
+  // Overrides the region-derived host. Used to point at a different cloud,
+  // a private endpoint, or a stand-in during testing.
+  AZURE_SPEECH_ENDPOINT: z.string().optional(),
+  AZURE_SPEECH_LANGUAGE: z.string().default('en-US'),
+  // 16 kHz 16-bit mono is 32 kB per second, so this is about two minutes.
+  SPEECH_MAX_AUDIO_BYTES: z.coerce.number().int().positive().default(4 * 1024 * 1024),
+
   VAPID_PUBLIC_KEY: z.string().optional(),
   VAPID_PRIVATE_KEY: z.string().optional(),
   VAPID_SUBJECT: z.string().default('mailto:admin@logicclass.plus'),

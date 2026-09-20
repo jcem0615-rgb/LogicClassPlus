@@ -18,7 +18,7 @@ the tiebreaker, exactly as the handoff says.
 | 3 | Realtime spine — Socket.io gateway, Notification model, in-app + Web Push, class-request → accept | **Done.** JWT handshake, per-user rooms, `notification:*`; Web Push sends when VAPID keys are set. |
 | 4 | WebRTC classroom shell — hardware check, device switching, signalling, join/leave | **Done.** Peer connection included: two browsers reach `connected` with media both ways, verified repeatedly. Device switching uses `replaceTrack`, so the far side sees no break. TURN credentials are minted per request from `GET /api/realtime/ice`. |
 | 5 | Math suite — whiteboard synced over the room channel, PDF/image annotation, KaTeX | **Done**, with one substitution noted below. Strokes broadcast on `classroom:board:stroke` and persist to `SessionDocument`. |
-| 6 | English suite — collaborative doc, audio recorder, pronunciation stub | **Done**, bar the scoring provider. Tiptap on a shared Yjs document with live cursors, merged and persisted by the server. The recorder measures a real amplitude envelope; per-phoneme scoring still needs a speech API. |
+| 6 | English suite — collaborative doc, audio recorder, pronunciation stub | **Done.** Tiptap on a shared Yjs document with live cursors, merged and persisted by the server; pronunciation scored by Azure Speech with per-word and per-phoneme detail, stored as attempts. See [`pronunciation.md`](./pronunciation.md). |
 | 7 | Attendance & payroll | **Done.** Clock in/out, grace window, late penalty, no-show forfeit, batch generation with frozen figures. |
 | 8 | Billing | **Done.** Invoices, PaymentIntent creation, signature-verified `payment_intent.succeeded` webhook. Needs your Stripe keys. |
 | 9 | Recording | **Decided and wired, not proven.** LiveKit Egress: control plane, signed webhook, storage accounting and consent notices are written and type-checked, but there was no live LiveKit server to test against, and the browsers still connect peer-to-peer so nothing flows through the SFU yet. See [`recording.md`](./recording.md). |
@@ -33,9 +33,13 @@ the tiebreaker, exactly as the handoff says.
   the client must publish into the SFU before there is anything to record. The
   "Record me" button in the classroom captures *your own* tracks with
   `MediaRecorder` and is not a class recording.
-- **Pronunciation scoring** needs a speech API (Azure Speech pronunciation
-  assessment, Google STT, or a self-hosted model). The waveform shown is measured
-  from the real recording; the per-phoneme numbers are a labelled placeholder.
+- **Pronunciation scoring** is wired to Azure Speech and no longer invents
+  anything: with a key configured it returns real per-word and per-phoneme
+  scores, and without one it shows no score at all. It has not run against the
+  live Azure service from here — there was no key — but the request it sends is
+  asserted field by field against a stand-in, including the base64
+  `Pronunciation-Assessment` header. Read the privacy section of
+  [`pronunciation.md`](./pronunciation.md) before enabling it for children.
 - **i18n**: `User.locale` is stored and editable. No framework is wired, as
   instructed.
 - **Password reset**: built as the handoff's "simplest version" — the request

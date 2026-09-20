@@ -564,6 +564,46 @@
     return api.post('/billing/invoices/' + id + '/remind', {}).then(refresh);
   }
 
+  /* ===================== pronunciation scoring ===================== */
+  function speechStatus() {
+    if (!isRemote()) {
+      return Promise.resolve({
+        configured: false,
+        reason: 'Scoring runs on the server. Connect one with an Azure Speech key configured.'
+      });
+    }
+    return api.get('/speech/status').catch(function () {
+      return { configured: false, reason: 'Could not reach the speech service.' };
+    });
+  }
+
+  /**
+   * Sends one attempt for assessment. The recording is converted to the
+   * 16 kHz mono WAV Azure requires before it leaves the browser.
+   */
+  function assessPronunciation(blob, referenceText, sessionId) {
+    if (!isRemote()) {
+      return Promise.reject(new Error(
+        'Scoring runs on the server. Connect one with an Azure Speech key configured.'));
+    }
+    return LC.audio.toWav16k(blob).then(function (wav) {
+      return api.post('/speech/assess', {
+        referenceText: referenceText,
+        audioBase64: wav.base64,
+        sessionId: sessionId || undefined
+      });
+    });
+  }
+
+  function pronunciationAttempts(options) {
+    if (!isRemote()) return Promise.resolve({ attempts: [] });
+    var query = [];
+    if (options && options.sessionId) query.push('sessionId=' + encodeURIComponent(options.sessionId));
+    if (options && options.limit) query.push('limit=' + options.limit);
+    return api.get('/speech/attempts' + (query.length ? '?' + query.join('&') : ''))
+      .catch(function () { return { attempts: [] }; });
+  }
+
   /* ========================== recording ========================== */
   /**
    * What a recording of this session would occupy. Available in demo mode too,
@@ -647,6 +687,8 @@
     clockIn: clockIn, clockOut: clockOut, markNoShow: markNoShow,
     runPayrollBatch: runPayrollBatch, payInvoice: payInvoice, remindInvoice: remindInvoice,
     markNotificationsRead: markNotificationsRead, subscribePush: subscribePush,
-    estimateRecording: estimateRecording, startRecording: startRecording, stopRecording: stopRecording
+    estimateRecording: estimateRecording, startRecording: startRecording, stopRecording: stopRecording,
+    speechStatus: speechStatus, assessPronunciation: assessPronunciation,
+    pronunciationAttempts: pronunciationAttempts
   };
 })();

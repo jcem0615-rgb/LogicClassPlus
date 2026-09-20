@@ -18,7 +18,7 @@
     startedAt: null, recorder: null, chunks: [], recording: false,
     board: { strokes: [], tool: 'pen', color: '#13222B', width: 3, undo: [], bg: null },
     ann: { strokes: [], tool: 'pen', color: '#A02B2B', width: 3, bg: null },
-    voice: { rec: null, chunks: [], url: null, peaks: null, phrase: 0 }
+    voice: { rec: null, chunks: [], url: null, blob: null, peaks: null, phrase: 0, result: null }
   };
 
   var PHRASES = [
@@ -530,7 +530,7 @@
     if (R.tab === 'annotate') initBoard('ann', R.ann);
     if (R.tab === 'equations') renderMath();
     if (R.tab === 'document') initDoc();
-    if (R.tab === 'speech') drawWave();
+    if (R.tab === 'speech') { drawWave(); paintSpeechStatus(); loadAttemptHistory(); if (R.voice.result) renderAssessment(R.voice.result); }
     if (R.tab === 'notes') paintRecordingPanel();
   }
 
@@ -658,22 +658,33 @@
 
   function tabSpeech() {
     var p = PHRASES[R.voice.phrase];
+    var recording = R.voice.rec && R.voice.rec.state === 'recording';
+
     return '<div class="stack" style="gap:12px">' +
       '<div class="row-between"><span class="eyebrow">Pronunciation drill · ' + esc(p.focus) + '</span>' +
-      '<button class="btn btn-sm" data-act="next-phrase">Next phrase</button></div>' +
-      '<div class="panel"><p style="font-size:19px;font-family:var(--font-display);line-height:1.4">' + esc(p.text) + '</p></div>' +
+      '<div class="row"><span class="small dim mono" id="speech-status">checking…</span>' +
+      '<button class="btn btn-sm" data-act="next-phrase">Next phrase</button></div></div>' +
+      '<div class="panel"><p style="font-size:19px;font-family:var(--font-display);line-height:1.4">' +
+      esc(p.text) + '</p>' +
+      '<p class="small dim mono" style="margin-top:6px">target sounds: ' +
+      p.phonemes.map(function (ph) { return '/' + esc(ph[0]) + '/'; }).join('  ') + '</p></div>' +
+
       '<div class="row" style="gap:8px;flex-wrap:wrap">' +
-      '<button class="btn ' + (R.voice.rec && R.voice.rec.state === 'recording' ? 'btn-danger' : 'btn-primary') + '" data-act="voice-record">' +
-      (R.voice.rec && R.voice.rec.state === 'recording' ? 'Stop recording' : 'Record your attempt') + '</button>' +
-      (R.voice.url ? '<button class="btn" data-act="voice-analyse">Analyse</button>' : '') +
+      '<button class="btn ' + (recording ? 'btn-danger' : 'btn-primary') + '" data-act="voice-record">' +
+      (recording ? 'Stop recording' : 'Record your attempt') + '</button>' +
+      (R.voice.url && !recording
+        ? '<button class="btn" data-act="voice-analyse" id="analyse-btn">Score this attempt</button>'
+        : '') +
       '</div>' +
       (R.voice.url ? '<audio controls src="' + R.voice.url + '" style="width:100%"></audio>' : '') +
+
       '<div class="panel"><div class="eyebrow" style="margin-bottom:8px">Waveform</div>' +
-      '<div class="wave" id="wave">' + (R.voice.peaks ? '' : '<span class="small dim">Record to see your envelope.</span>') + '</div></div>' +
+      '<div class="wave" id="wave">' +
+      (R.voice.peaks ? '' : '<span class="small dim">Record to see your envelope.</span>') +
+      '</div></div>' +
+
       '<div id="score-out"></div>' +
-      '<div class="flag"><b>Scoring provider not chosen yet</b><div>The waveform above is measured from your real recording. ' +
-      'Per-phoneme accuracy needs a speech API — Azure Speech pronunciation assessment, Google STT, or a self-hosted model. ' +
-      'The handoff flags this as an open decision, so the scores below are a labelled placeholder, not a measurement.</div></div>' +
+      '<div id="attempt-history"></div>' +
       '</div>';
   }
 
@@ -1054,6 +1065,8 @@
         var blob = new Blob(R.voice.chunks, { type: rec.mimeType || 'audio/webm' });
         if (R.voice.url) URL.revokeObjectURL(R.voice.url);
         R.voice.url = URL.createObjectURL(blob);
+        R.voice.blob = blob;
+        R.voice.result = null;
         analysePeaks(blob);
       };
       rec.start();
@@ -1095,26 +1108,159 @@
     }).join('');
   }
 
-  function analyseSpeech() {
-    var p = PHRASES[R.voice.phrase];
-    var peaks = R.voice.peaks || [];
-    var energy = peaks.reduce(function (a, b) { return a + b; }, 0) / (peaks.length || 1);
-    var base = Math.min(96, Math.max(58, Math.round(62 + energy * 46)));
+  /** Colour by score the way a teacher would read it. */
+  function scoreTone(score) {
+    if (score == null) return 'var(--ink-3)';
+    return score >= 85 ? 'var(--ok)' : score >= 70 ? 'var(--warn)' : 'var(--crit)';
+  }
+
+  function scoreBar(label, value) {
+    if (value == null) return '';
+    return '<div class="row-between" style="gap:12px">' +
+      '<span class="small muted" style="min-width:104px">' + esc(label) + '</span>' +
+      '<div class="bar-track grow"><i style="width:' + Math.max(0, Math.min(100, value)) +
+      '%;background:' + scoreTone(value) + '"></i></div>' +
+      '<span class="mono small" style="min-width:34px;text-align:right;color:' + scoreTone(value) + '">' +
+      Math.round(value) + '</span></div>';
+  }
+
+  /** Renders what Azure actually returned: per word, then per phoneme. */
+  function renderAssessment(result) {
     var out = document.getElementById('score-out');
     if (!out) return;
-    var rows = p.phonemes.map(function (ph, i) {
-      var score = Math.max(41, Math.min(99, base + ((i * 37) % 23) - 11));
-      var tone = score >= 85 ? 'var(--ok)' : score >= 70 ? 'var(--warn)' : 'var(--crit)';
-      return '<div class="ph"><span class="s mono" style="color:' + tone + '">' + score + '</span>' +
-        '<span class="p mono">/' + esc(ph[0]) + '/</span><span class="small dim">' + esc(ph[1]) + '</span></div>';
+
+    var errorLabels = {
+      None: '', Mispronunciation: 'mispronounced', Omission: 'omitted',
+      Insertion: 'added', UnexpectedBreak: 'broken', MissingBreak: 'run on', Monotone: 'flat'
+    };
+
+    var words = (result.words || []).map(function (w, index) {
+      var label = errorLabels[w.errorType] || '';
+      return '<button class="word-chip" data-act="show-word" data-index="' + index + '"' +
+        ' style="border-color:' + scoreTone(w.accuracy) + ';color:' + scoreTone(w.accuracy) + '">' +
+        esc(w.word) +
+        (w.accuracy != null ? '<span class="mono">' + Math.round(w.accuracy) + '</span>' : '') +
+        (label ? '<span class="small">' + esc(label) + '</span>' : '') +
+        '</button>';
     }).join('');
-    out.innerHTML = '<div class="panel stack" style="gap:10px">' +
-      '<div class="row-between"><span class="eyebrow">Placeholder score · not a measurement</span>' +
-      '<span class="mono small">' + (R.voice.seconds ? R.voice.seconds.toFixed(1) + 's' : '') + '</span></div>' +
-      '<div class="phonemes">' + rows + '</div>' +
-      '<div class="row-between"><span class="small muted">Overall</span>' +
-      '<div class="row" style="flex:1;max-width:260px"><div class="bar-track grow"><i style="width:' + base + '%"></i></div>' +
-      '<span class="mono small">' + base + '/100</span></div></div></div>';
+
+    // Open on the weakest word: that is the one worth practising.
+    var weakest = 0;
+    (result.words || []).forEach(function (w, i) {
+      var current = result.words[weakest];
+      if (w.accuracy != null && (current.accuracy == null || w.accuracy < current.accuracy)) weakest = i;
+    });
+
+    out.innerHTML =
+      '<div class="panel stack" style="gap:12px">' +
+      '<div class="row-between"><span class="eyebrow">Scored by Azure Speech</span>' +
+      '<span class="small dim mono">' +
+      (result.durationSeconds ? result.durationSeconds.toFixed(1) + 's' : '') + '</span></div>' +
+
+      '<div class="stack" style="gap:7px">' +
+      scoreBar('Pronunciation', result.scores.pronunciation) +
+      scoreBar('Accuracy', result.scores.accuracy) +
+      scoreBar('Fluency', result.scores.fluency) +
+      scoreBar('Completeness', result.scores.completeness) +
+      scoreBar('Prosody', result.scores.prosody) +
+      '</div>' +
+
+      '<div><div class="eyebrow" style="margin-bottom:6px">Heard</div>' +
+      '<p class="small muted">“' + esc(result.recognizedText || '—') + '”</p></div>' +
+
+      '<div><div class="eyebrow" style="margin-bottom:6px">Word by word — tap one for its sounds</div>' +
+      '<div class="word-chips">' + words + '</div></div>' +
+      '<div id="phoneme-out"></div>' +
+      '</div>';
+
+    R.voice.result = result;
+    if ((result.words || []).length) showWordDetail(weakest);
+  }
+
+  function showWordDetail(index) {
+    var host = document.getElementById('phoneme-out');
+    var result = R.voice.result;
+    if (!host || !result || !result.words[index]) return;
+    var word = result.words[index];
+
+    document.querySelectorAll('.word-chip').forEach(function (chip, i) {
+      chip.classList.toggle('on', i === index);
+    });
+
+    host.innerHTML = word.phonemes.length
+      ? '<div class="eyebrow" style="margin:4px 0 6px">Sounds in “' + esc(word.word) + '”</div>' +
+        '<div class="phonemes">' + word.phonemes.map(function (ph) {
+          return '<div class="ph"><span class="s mono" style="color:' + scoreTone(ph.accuracy) + '">' +
+            (ph.accuracy == null ? '—' : Math.round(ph.accuracy)) + '</span>' +
+            '<span class="p mono">/' + esc(ph.phoneme) + '/</span></div>';
+        }).join('') + '</div>'
+      : '<p class="small dim">No phoneme detail for “' + esc(word.word) + '”.</p>';
+  }
+
+  /** Sends the recording for scoring. Nothing is invented if it cannot run. */
+  function analyseSpeech() {
+    var out = document.getElementById('score-out');
+    var button = document.getElementById('analyse-btn');
+    if (!R.voice.blob) {
+      LC.app.toast('warn', 'Record first', 'There is no attempt to score yet.');
+      return;
+    }
+    if (button) { button.disabled = true; button.textContent = 'Scoring…'; }
+    if (out) out.innerHTML = '<div class="panel small dim">Converting to 16 kHz mono and sending to Azure…</div>';
+
+    LC.data.assessPronunciation(R.voice.blob, PHRASES[R.voice.phrase].text, R.session && R.session.id)
+      .then(function (result) {
+        renderAssessment(result);
+        loadAttemptHistory();
+      })
+      .catch(function (err) {
+        if (out) {
+          out.innerHTML = '<div class="flag"><b>Not scored</b><div>' + esc(err.message) + '</div></div>';
+        }
+      })
+      .then(function () {
+        var b = document.getElementById('analyse-btn');
+        if (b) { b.disabled = false; b.textContent = 'Score this attempt'; }
+      });
+  }
+
+  /** Whether scoring is available at all, said plainly rather than guessed at. */
+  function paintSpeechStatus() {
+    var el = document.getElementById('speech-status');
+    if (!el) return;
+    LC.data.speechStatus().then(function (status) {
+      var current = document.getElementById('speech-status');
+      if (!current) return;
+      current.textContent = status.configured ? 'Azure Speech · ' + (status.language || 'en-US') : 'scoring off';
+      current.style.color = status.configured ? 'var(--ok)' : 'var(--ink-3)';
+      if (!status.configured) {
+        var out = document.getElementById('score-out');
+        if (out && !R.voice.result) {
+          out.innerHTML = '<div class="flag"><b>Scoring is not switched on</b><div>' +
+            esc(status.reason || '') + ' The waveform above is measured from your real recording; ' +
+            'no score is shown, because a made-up number is worse than none.</div></div>';
+        }
+      }
+    });
+  }
+
+  function loadAttemptHistory() {
+    var host = document.getElementById('attempt-history');
+    if (!host || !R.session) return;
+    LC.data.pronunciationAttempts({ sessionId: R.session.id, limit: 5 }).then(function (r) {
+      var current = document.getElementById('attempt-history');
+      if (!current || !r.attempts.length) return;
+      current.innerHTML = '<section class="card"><div class="card-head" style="padding:10px 14px">' +
+        '<h3>Earlier attempts</h3><span class="small dim">' + r.attempts.length + ' in this session</span></div>' +
+        '<div class="list-rows">' + r.attempts.map(function (a) {
+          var score = a.scores.pronunciation;
+          return '<div class="row-between"><div style="min-width:0">' +
+            '<div class="small" style="font-weight:600">“' + esc(a.referenceText.slice(0, 48)) + '”</div>' +
+            '<div class="small dim mono">' + F.ago(a.createdAt) + '</div></div>' +
+            '<span class="mono" style="font-weight:600;color:' + scoreTone(score) + '">' +
+            (score == null ? '—' : Math.round(score)) + '</span></div>';
+        }).join('') + '</div></section>';
+    });
   }
 
   /* ========================= file open ========================= */
@@ -1360,7 +1506,15 @@
     },
     'voice-record': function () { voiceRecord(); },
     'voice-analyse': function () { analyseSpeech(); },
-    'next-phrase': function () { R.voice.phrase = (R.voice.phrase + 1) % PHRASES.length; R.voice.peaks = null; R.voice.url = null; renderTab(); },
+    'next-phrase': function () {
+      R.voice.phrase = (R.voice.phrase + 1) % PHRASES.length;
+      R.voice.peaks = null;
+      R.voice.url = null;
+      R.voice.blob = null;
+      R.voice.result = null;
+      renderTab();
+    },
+    'show-word': function (el) { showWordDetail(+el.dataset.index); },
     'end-session': function () {
       var ses = R.session;
       teardown();

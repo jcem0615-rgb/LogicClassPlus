@@ -19,6 +19,8 @@ import { notificationsRouter } from './routes/notifications.js';
 import { stripeWebhookRouter } from './routes/stripe-webhook.js';
 import { realtimeRouter } from './routes/realtime.js';
 import { recordingsRouter, recordingWebhookRouter } from './routes/recordings.js';
+import { speechRouter } from './routes/speech.js';
+import { isSpeechConfigured } from './services/speech.js';
 import { isRecordingConfigured } from './services/recording.js';
 
 export function createApp() {
@@ -54,6 +56,7 @@ export function createApp() {
         webPush: isPushConfigured(),
         s3: isS3Configured(),
         recording: isRecordingConfigured(),
+        speech: isSpeechConfigured(),
       },
       policy: {
         uploadMaxBytes: env.UPLOAD_MAX_BYTES,
@@ -75,6 +78,7 @@ export function createApp() {
   app.use('/api/notifications', notificationsRouter);
   app.use('/api/realtime', realtimeRouter);
   app.use('/api/recordings', recordingsRouter);
+  app.use('/api/speech', speechRouter);
 
   app.use((req, res) => {
     res.status(404).json({ error: { message: `No route for ${req.method} ${req.path}`, code: 'not_found' } });

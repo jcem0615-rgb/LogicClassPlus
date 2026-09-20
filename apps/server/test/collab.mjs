@@ -1,6 +1,7 @@
 import { chromium } from 'playwright';
 const b = await chromium.launch({
-  executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+  // Playwright's own chromium by default; CHROMIUM_PATH overrides it.
+  ...(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {}),
   args: ['--use-fake-ui-for-media-stream','--use-fake-device-for-media-stream'],
 });
 const errs = [];
@@ -101,8 +102,8 @@ ok('teacher sees the student in the document', /Amira/.test(presence), JSON.stri
 const caret = await teacher.evaluate(() => document.querySelectorAll('.collaboration-cursor__caret').length);
 ok('remote caret is rendered', caret > 0, 'carets=' + caret);
 
-await teacher.screenshot({ path: 'c1-teacher-doc.png' });
-await student.screenshot({ path: 'c2-student-doc.png' });
+await teacher.screenshot({ path: (process.env.SHOT_DIR || '/tmp') + '/c1-teacher-doc.png' });
+await student.screenshot({ path: (process.env.SHOT_DIR || '/tmp') + '/c2-student-doc.png' });
 
 // persistence: both leave, a third party opens it later
 await teacher.waitForTimeout(2600);   // let the debounce write
@@ -124,7 +125,7 @@ await rejoin.waitForTimeout(1400); await rejoin.click('#hw-join'); await rejoin.
 await rejoin.click('[data-tab="document"]'); await rejoin.waitForTimeout(2000);
 const restored = await text(rejoin);
 ok('reopening restores the document from the server', (restored||'').includes('AAAA') && (restored||'').includes('BBBB'), JSON.stringify(restored));
-await rejoin.screenshot({ path: 'c3-restored.png' });
+await rejoin.screenshot({ path: (process.env.SHOT_DIR || '/tmp') + '/c3-restored.png' });
 
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errs.length ? JSON.stringify([...new Set(errs)].slice(0,6), null, 1) : 'none');
