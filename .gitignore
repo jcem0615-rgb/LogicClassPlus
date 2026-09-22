@@ -8,3 +8,10 @@ apps/server/prisma/*.db
 
 # test screenshots
 *.png
+
+# Next.js
+apps/web/.next/
+apps/web/out/
+apps/web/next-env.d.ts
+apps/web/public/sw.js
+apps/web/public/workbox-*.js

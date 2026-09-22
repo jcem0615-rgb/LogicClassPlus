@@ -1,0 +1,107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   Design tokens. One definition drives light, dark and the
+   explicit theme toggle; Tailwind reads these through
+   tailwind.config.ts, so no component picks a raw colour.
+   ============================================================ */
+:root {
+  --paper:#F2F4F3;   --card:#FFFFFF;   --card-2:#F7F9F8;  --sunk:#EAEEEC;
+  --ink:#13222B;     --ink-2:#485A63;  --ink-3:#72868D;
+  --line:#DCE3E1;    --line-2:#C4D0CD;
+  --brand:#0B6B62;   --brand-soft:#DCEDE9; --brand-ink:#064B45;
+  --on-brand:#FFFFFF;
+  --math:#2E5AAC;    --math-soft:#E2EAF9;
+  --english:#A8452B; --english-soft:#F8E7E1;
+  --ok:#1C7A4B;      --ok-soft:#DEF0E6;
+  --warn:#845F00;    --warn-soft:#F8EDD2;
+  --crit:#A02B2B;    --crit-soft:#F9E3E0;
+  --shadow-1:0 1px 2px rgba(19,34,43,.06);
+  --shadow-2:0 1px 2px rgba(19,34,43,.06), 0 10px 26px -14px rgba(19,34,43,.30);
+  --font-display:"Fraunces","Iowan Old Style",Georgia,serif;
+  --font-ui:"IBM Plex Sans",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --font-mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:#0C1517; --card:#131F22; --card-2:#18262A; --sunk:#0F1B1E;
+    --ink:#E6EEEB;   --ink-2:#A6BAB5; --ink-3:#7B908C;
+    --line:#223438;  --line-2:#31474C;
+    --brand:#4FBFAF; --brand-soft:#0F332E; --brand-ink:#9FE3D8;
+    --on-brand:#05201D;
+    --math:#86A9EE;  --math-soft:#16243C;
+    --english:#E08E6E; --english-soft:#331C14;
+    --ok:#56C88B;    --ok-soft:#0F2E1F;
+    --warn:#D8AE55;  --warn-soft:#2F2411;
+    --crit:#E38077;  --crit-soft:#331917;
+    --shadow-1:0 1px 2px rgba(0,0,0,.4);
+    --shadow-2:0 1px 2px rgba(0,0,0,.4), 0 12px 28px -16px rgba(0,0,0,.8);
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper:#0C1517; --card:#131F22; --card-2:#18262A; --sunk:#0F1B1E;
+  --ink:#E6EEEB;   --ink-2:#A6BAB5; --ink-3:#7B908C;
+  --line:#223438;  --line-2:#31474C;
+  --brand:#4FBFAF; --brand-soft:#0F332E; --brand-ink:#9FE3D8;
+  --on-brand:#05201D;
+  --math:#86A9EE;  --math-soft:#16243C;
+  --english:#E08E6E; --english-soft:#331C14;
+  --ok:#56C88B;    --ok-soft:#0F2E1F;
+  --warn:#D8AE55;  --warn-soft:#2F2411;
+  --crit:#E38077;  --crit-soft:#331917;
+  --shadow-1:0 1px 2px rgba(0,0,0,.4);
+  --shadow-2:0 1px 2px rgba(0,0,0,.4), 0 12px 28px -16px rgba(0,0,0,.8);
+}
+
+@layer base {
+  html, body { height: 100%; }
+  body {
+    @apply bg-paper text-ink font-ui;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1, h2, h3, h4 { @apply font-display font-semibold; text-wrap: balance; letter-spacing: -.01em; }
+  :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; border-radius: 4px; }
+  input, select, textarea { @apply bg-card text-ink border border-line-2 rounded-sm px-3 py-2 text-sm w-full; }
+  input::placeholder, textarea::placeholder { @apply text-ink-3; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 6px; }
+}
+
+@layer components {
+  .tabular { font-variant-numeric: tabular-nums; }
+  .eyebrow { @apply font-mono text-[11px] uppercase tracking-[.1em] text-ink-3; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}
+
+/* the shared document, and the other person's caret in it */
+.ProseMirror { @apply px-5 py-4 min-h-[280px] outline-none; line-height: 1.65; }
+.ProseMirror > * + * { margin-top: .7em; }
+.ProseMirror h1 { @apply font-display text-[23px]; }
+.ProseMirror h2 { @apply font-display text-[19px]; }
+.ProseMirror ul { @apply list-disc pl-5; }
+.ProseMirror ol { @apply list-decimal pl-5; }
+.ProseMirror li > p { margin: 0; }
+.ProseMirror code { @apply font-mono text-[.9em] bg-sunk px-1 rounded; }
+.ProseMirror s { text-decoration-color: var(--english); text-decoration-thickness: 2px; }
+.collaboration-cursor__caret {
+  position: relative; margin-left: -1px; margin-right: -1px;
+  border-left: 1px solid currentColor; border-right: 1px solid currentColor;
+  word-break: normal; pointer-events: none;
+}
+.collaboration-cursor__label {
+  position: absolute; top: -1.45em; left: -1px; padding: 1px 6px;
+  border-radius: 4px 4px 4px 0; color: #fff;
+  font: 500 11px/1.4 var(--font-mono); white-space: nowrap; user-select: none; pointer-events: none;
+}
+
+/* KaTeX renders to MathML, so its own stylesheet (and font files) are not needed */
+.katex-display { margin: 0; }
