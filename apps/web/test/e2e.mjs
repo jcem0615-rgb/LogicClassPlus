@@ -177,6 +177,29 @@ await teacher.screenshot({ path: (process.env.SHOT_DIR || '/tmp') + '/web-room.p
 await teacher.goto(`${WEB}/dashboard`, { waitUntil: 'networkidle' });
 await teacher.screenshot({ path: (process.env.SHOT_DIR || '/tmp') + '/web-dashboard.png' });
 
+console.log('\n5. The API address is set in the browser, not baked in');
+const visitor = await open('visitor');
+const panel = (await visitor.textContent('[data-panel=api]')).replace(/\s+/g, ' ');
+ok('the sign-in page names the API it is using',
+  panel.includes(API) && /answering/.test(panel), panel.slice(-200));
+
+// A hosted client cannot know where the reader's API runs, so the address has
+// to survive being handed over in a link.
+await visitor.goto(`${WEB}/?api=http://127.0.0.1:4001`, { waitUntil: 'networkidle' });
+await visitor.waitForTimeout(1500);
+ok('?api= is adopted and dropped from the address bar',
+  !visitor.url().includes('api=')
+  && (await visitor.evaluate(() => localStorage.getItem('logicclass.api'))) === 'http://127.0.0.1:4001');
+ok('the adopted address is the one shown and probed',
+  (await visitor.textContent('[data-panel=api]')).includes('http://127.0.0.1:4001'));
+
+// And a wrong address has to say so rather than looking like a broken sign-in.
+await visitor.goto(`${WEB}/?api=http://127.0.0.1:4999`, { waitUntil: 'networkidle' });
+await visitor.waitForTimeout(2500);
+ok('an API that is not there is reported, not silently failed',
+  /not reachable/.test((await visitor.textContent('[data-panel=api]')).replace(/\s+/g, ' ')));
+await visitor.close();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');
 await browser.close();

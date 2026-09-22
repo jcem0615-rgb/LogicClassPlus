@@ -12,9 +12,53 @@ import type {
 } from './types';
 
 const TOKEN_KEY = 'logicclass.token';
+const API_KEY = 'logicclass.api';
 
-export const apiUrl = (): string =>
-  process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4001';
+/** Where the API lives unless this browser has been pointed somewhere else. */
+const BUILT_IN_API = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4001';
+
+export const defaultApiUrl = (): string => BUILT_IN_API;
+
+/**
+ * The API base this browser is using.
+ *
+ * The build-time value is only a default: a hosted copy of this client has no
+ * way to know where the reader's API is running, so the address is overridable
+ * at runtime and kept per browser.
+ */
+export const apiUrl = (): string => {
+  if (typeof window === 'undefined') return BUILT_IN_API;
+  try { return window.localStorage.getItem(API_KEY) || BUILT_IN_API; } catch { return BUILT_IN_API; }
+};
+
+/** Points this browser at `url`; an empty value restores the built-in default. */
+export function setApiUrl(url: string): void {
+  if (typeof window === 'undefined') return;
+  const trimmed = url.trim().replace(/\/+$/, '');
+  try {
+    if (!trimmed || trimmed === BUILT_IN_API) window.localStorage.removeItem(API_KEY);
+    else window.localStorage.setItem(API_KEY, trimmed);
+  } catch { /* private window */ }
+}
+
+/**
+ * Adopts `?api=https://host` from the address bar, so a working link can be
+ * shared rather than a link plus an instruction to go change a setting.
+ */
+export function adoptApiFromQuery(): void {
+  if (typeof window === 'undefined') return;
+  const wanted = new URLSearchParams(window.location.search).get('api');
+  if (!wanted) return;
+  setApiUrl(wanted);
+  const url = new URL(window.location.href);
+  url.searchParams.delete('api');
+  window.history.replaceState(null, '', url.toString());
+}
+
+// Adopted as this module loads rather than from an effect: effects run
+// child-first, so the sign-in panel would have read — and probed — the old
+// address before the provider above it got its turn.
+if (typeof window !== 'undefined') adoptApiFromQuery();
 
 export function getToken(): string {
   if (typeof window === 'undefined') return '';

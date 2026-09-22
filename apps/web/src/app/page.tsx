@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStore } from '@/lib/store';
-import { api } from '@/lib/api';
+import { api, apiUrl, defaultApiUrl, setApiUrl } from '@/lib/api';
 import { Button, Field, Flag, Modal } from '@/components/ui';
 import type { Subject } from '@/lib/types';
 
@@ -158,6 +158,8 @@ export default function AuthPage() {
               </button>
             ))}
           </div>
+
+          <ApiPanel />
         </div>
       </section>
 
@@ -177,6 +179,79 @@ export default function AuthPage() {
             the dashboard.
           </p>
         </Modal>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Where this browser sends its requests.
+ *
+ * The client is static and the API is a long-lived server, so a hosted copy of
+ * this page cannot assume the two share an origin. Reading the address back —
+ * and proving it answers — is the difference between "signing in is broken"
+ * and "the API is not running yet".
+ */
+function ApiPanel() {
+  const [url, setUrl] = useState('');
+  const [draft, setDraft] = useState('');
+  const [open, setOpen] = useState(false);
+  const [probe, setProbe] = useState<'checking' | 'up' | 'down'>('checking');
+
+  const check = useRef((next: string) => {
+    setProbe('checking');
+    void api.health()
+      .then(() => setProbe('up'))
+      .catch(() => setProbe('down'));
+    setUrl(next);
+    setDraft(next);
+  });
+
+  useEffect(() => { check.current(apiUrl()); }, []);
+
+  const tone = probe === 'up' ? 'text-ok' : probe === 'down' ? 'text-crit' : 'text-ink-3';
+  const label = probe === 'up' ? 'answering' : probe === 'down' ? 'not reachable' : 'checking…';
+
+  return (
+    <div data-panel="api" className="rounded-sm border border-line-2 bg-card-2 px-3.5 py-3 text-[12.5px]">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="eyebrow">API server</span>
+        <button type="button" className="text-ink-3 hover:text-brand"
+          onClick={() => setOpen((v) => !v)}>
+          {open ? 'Cancel' : 'Change'}
+        </button>
+      </div>
+
+      {open ? (
+        <form
+          className="mt-2 flex gap-2"
+          onSubmit={(e) => {
+            e.preventDefault();
+            setApiUrl(draft);
+            setOpen(false);
+            check.current(apiUrl());
+          }}
+        >
+          <input
+            className="flex-1 font-mono text-[12px]" value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={defaultApiUrl()} aria-label="API base URL"
+          />
+          <Button type="submit" variant="primary">Use</Button>
+        </form>
+      ) : (
+        <div className="mt-1 flex flex-wrap items-baseline gap-x-2">
+          <span className="font-mono text-ink-2">{url}</span>
+          <span className={tone}>· {label}</span>
+        </div>
+      )}
+
+      {probe === 'down' ? (
+        <p className="mt-1.5 text-ink-3">
+          Nothing is answering there. Start the API (<span className="font-mono">npm run dev</span> in
+          <span className="font-mono"> apps/server</span>), then point this at it — its address can also
+          be passed as <span className="font-mono">?api=</span> in the link.
+        </p>
       ) : null}
     </div>
   );
