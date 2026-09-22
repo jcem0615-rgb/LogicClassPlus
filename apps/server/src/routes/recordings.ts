@@ -6,8 +6,8 @@ import { asyncRoute, validate } from '../lib/validate.js';
 import { badRequest, forbidden, notFound } from '../lib/http-error.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
 import {
-  estimateBytes, isRecordingConfigured, livekitToken, PRESETS, recordingBlockedReason,
-  roomNameFor, startRecording, stopRecording, verifyWebhook, type Preset,
+  estimateBytes, isRecordingConfigured, PRESETS, recordingBlockedReason,
+  startRecording, stopRecording, verifyWebhook, type Preset,
 } from '../services/recording.js';
 import { notify } from '../services/notifications.js';
 import { emitToSession } from '../realtime/gateway.js';
@@ -40,13 +40,22 @@ async function handleEgressEvent(event: { event?: string; egressInfo?: Record<st
   const egressId = String(info['egressId'] ?? info['egress_id'] ?? '');
   if (!egressId) return;
 
-  const session = await prisma.classSession.findFirst({ where: { recordingEgressId: egressId } });
-  if (!session) return;
-
   // LiveKit reports one result per configured output.
   const files = (info['fileResults'] ?? info['file_results']) as Array<Record<string, unknown>> | undefined;
   const file = files?.[0];
   const location = file ? String(file['location'] ?? file['filename'] ?? '') : '';
+
+  // Normally the egress id still points at the session. If the teacher stopped
+  // the recording, it was cleared, so fall back to the session id in the path
+  // this server chose when it started the egress.
+  let session = await prisma.classSession.findFirst({ where: { recordingEgressId: egressId } });
+  if (!session) {
+    const fromPath = /recordings\/([^/]+)\//.exec(String(file?.['filename'] ?? location));
+    if (fromPath?.[1]) {
+      session = await prisma.classSession.findUnique({ where: { id: fromPath[1] } });
+    }
+  }
+  if (!session) return;
   const size = file ? Number(file['size'] ?? 0) : 0;
   const durationNs = file ? Number(file['duration'] ?? 0) : 0;
 
@@ -114,28 +123,6 @@ recordingsRouter.get('/usage', requireRole('OWNER'), asyncRoute(async (_req, res
   });
 }));
 
-/**
- * A LiveKit join token. The browser uses this to publish into the SFU instead
- * of connecting peer-to-peer — recording only exists for SFU-routed media.
- */
-recordingsRouter.get('/token/:sessionId', asyncRoute(async (req, res) => {
-  const me = actor(req);
-  const session = await prisma.classSession.findUnique({ where: { id: String(req.params['sessionId']) } });
-  if (!session) throw notFound('That session no longer exists.');
-  if (me.role !== 'OWNER' && session.teacherId !== me.id && session.studentId !== me.id) {
-    throw forbidden('Only the teacher and student in this session can join it.');
-  }
-  if (!isRecordingConfigured()) {
-    res.status(503).json({ error: { message: recordingBlockedReason(), code: 'not_configured' } });
-    return;
-  }
-  res.json({
-    url: env.LIVEKIT_URL,
-    room: roomNameFor(session.id),
-    token: livekitToken({ room: roomNameFor(session.id), identity: me.id }),
-  });
-}));
-
 recordingsRouter.post('/:sessionId/start', requireRole('TEACHER', 'OWNER'), asyncRoute(async (req, res) => {
   const me = actor(req);
   const session = await prisma.classSession.findUnique({ where: { id: String(req.params['sessionId']) } });
@@ -147,11 +134,17 @@ recordingsRouter.post('/:sessionId/start', requireRole('TEACHER', 'OWNER'), asyn
     res.status(503).json({ error: { message: blocked, code: 'not_configured' } });
     return;
   }
-  if (session.recordingEgressId) throw badRequest('This session is already recording.');
+  // "In flight" means an egress was started and its file has not landed yet.
+  // A finished recording must not block the next one: a teacher may well
+  // record the second half of a class separately.
+  if (session.recordingEgressId && !session.recordingUrl) {
+    throw badRequest('This session is already recording.');
+  }
 
   const egress = await startRecording(session.id);
   await prisma.classSession.update({
-    where: { id: session.id }, data: { recordingEgressId: egress.egressId },
+    where: { id: session.id },
+    data: { recordingEgressId: egress.egressId, recordingUrl: null },
   });
 
   // Both participants are told, every time. Recording a person silently is not
@@ -175,6 +168,11 @@ recordingsRouter.post('/:sessionId/stop', requireRole('TEACHER', 'OWNER'), async
   if (!session.recordingEgressId) throw badRequest('This session is not recording.');
 
   await stopRecording(session.recordingEgressId);
+  // The id is cleared so another recording can start straight away. The
+  // webhook still finds this session: the file path carries the session id.
+  await prisma.classSession.update({
+    where: { id: session.id }, data: { recordingEgressId: null },
+  });
   emitToSession(session.id, 'classroom:recording', { status: 'stopping' });
   res.json({ ok: true, note: 'The file appears once the media server finishes uploading it.' });
 }));

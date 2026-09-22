@@ -11,7 +11,8 @@
   var S = LC.store, F = LC.fmt, esc = LC.esc;
 
   var R = {
-    session: null, peerPresent: false, loaded: null, peerState: null, hasRemoteStream: false, roomRecording: false, editor: null, provider: null, stream: null, audioCtx: null, analyser: null, raf: null,
+    session: null, peerPresent: false, loaded: null, peerState: null, hasRemoteStream: false, roomRecording: false, editor: null, provider: null,
+    transport: null, canRecord: false, remoteStream: null, lookupTried: null, stream: null, audioCtx: null, analyser: null, raf: null,
     devices: { cams: [], mics: [], outs: [] },
     picked: { cam: '', mic: '' },
     joined: false, tab: 'whiteboard', camOn: true, micOn: true,
@@ -36,7 +37,17 @@
     sub: function () { return R.session ? R.session.topic : ''; },
     render: function (ctx) {
       var ses = S.db.sessions.find(function (s) { return s.id === ctx.params.id; });
-      if (!ses) return LC.ui.empty('Session not found', 'That classroom does not exist or you do not have access to it.');
+      if (!ses) {
+        // Opening a room by link, or one accepted since this tab loaded, means
+        // the session may not be cached yet. Ask the server before giving up.
+        if (LC.data.isRemote() && R.lookupTried !== ctx.params.id) {
+          R.lookupTried = ctx.params.id;
+          LC.data.refresh().then(function () { LC.app.render(); });
+          return '<div class="empty"><h3>Opening the classroom…</h3><p>Fetching this session.</p></div>';
+        }
+        return LC.ui.empty('Session not found', 'That classroom does not exist or you do not have access to it.');
+      }
+      R.lookupTried = null;
       var u = ctx.user;
       if (u.role !== 'owner' && ses.teacherId !== u.id && ses.studentId !== u.id) {
         return LC.ui.empty('Not your classroom', 'Only the teacher and student in this session can enter it.');
@@ -62,7 +73,8 @@
         '<div class="state" id="local-state"></div></div>';
       html += '<div class="panel stack" style="gap:10px">' +
         '<div class="row-between"><span class="eyebrow">Microphone</span>' +
-        '<span class="mono small dim" id="room-timer">00:00</span></div>' +
+        '<div class="row" style="gap:6px"><span id="transport-tag"></span>' +
+        '<span class="mono small dim" id="room-timer">00:00</span></div></div>' +
         '<div class="meter"><i id="mic-meter"></i></div>' +
         '<div class="row" style="flex-wrap:wrap;gap:6px">' +
         '<button class="btn btn-sm" data-act="toggle-mic">Mute</button>' +
@@ -272,8 +284,22 @@
           ? (R.peerPresent ? 'Connecting to the other participant.' : 'Waiting for the other participant to join.')
           : 'No server connected, so the peer here is simulated.');
       LC.app.render();
-      // Someone is already here: open the peer connection straight away.
-      if (R.peerPresent) startPeer(peers[0] && peers[0].socketId);
+
+      // The server decides the transport. Through a media server the class can
+      // be recorded; peer-to-peer cannot be, because the server sees no media.
+      LC.data.sfuCredentials(ses.id).then(function (creds) {
+        if (!R.session || R.session.id !== ses.id) return;
+        if (creds.available) {
+          R.transport = 'sfu';
+          R.canRecord = creds.canRecord;
+          startSfu(creds);
+          return;
+        }
+        R.transport = 'p2p';
+        R.canRecord = false;
+        paintTransport();
+        if (R.peerPresent) startPeer(peers[0] && peers[0].socketId);
+      });
     }).catch(function (err) {
       R.joined = false;
       LC.app.toast('err', 'Could not enter the classroom', err.message);
@@ -387,7 +413,10 @@
 
   function teardown() {
     destroyLiveDoc();
+    if (R.transport === 'sfu') LC.sfu.disconnect();
     LC.webrtc.stop();
+    R.transport = null;
+    R.remoteStream = null;
     R.hasRemoteStream = false;
     R.peerState = null;
     showRemoteVideo(false);
@@ -438,11 +467,99 @@
     g.font = '400 12px "IBM Plex Mono", monospace';
     g.fillStyle = 'rgba(201,231,225,.75)';
     g.fillText(
-      R.peerPresent ? 'peer connected — negotiating media'
+      R.peerPresent ? 'connected — negotiating media'
+        : R.transport === 'sfu' ? 'waiting for the other participant'
         : LC.data.isRemote() ? 'waiting for the other participant to join'
         : 'simulated — no signalling server connected',
       w / 2, Math.min(h - 34, h / 2 + 66),
     );
+  }
+
+  /* ====================== SFU transport ====================== */
+  var sfuWired = false;
+
+  function startSfu(creds) {
+    if (!sfuWired) {
+      sfuWired = true;
+
+      LC.sfu.on('remote-track', function (event) {
+        var video = document.getElementById('remote-video');
+        if (!video) return;
+        if (!R.remoteStream) R.remoteStream = new MediaStream();
+        // mediaStreamTrack is the underlying browser track LiveKit wraps.
+        var raw = event.track.mediaStreamTrack;
+        if (raw && !R.remoteStream.getTrackById(raw.id)) R.remoteStream.addTrack(raw);
+        video.srcObject = R.remoteStream;
+        var play = video.play();
+        if (play && play.catch) play.catch(function () { /* autoplay policy */ });
+        R.hasRemoteStream = true;
+        R.peerState = 'connected';
+        syncRemoteTile();
+      });
+
+      LC.sfu.on('remote-track-gone', function () {
+        if (!R.remoteStream || !R.remoteStream.getTracks().length) {
+          R.hasRemoteStream = false;
+          syncRemoteTile();
+        }
+      });
+
+      LC.sfu.on('peer', function (info) {
+        R.peerPresent = info.present;
+        if (!info.present) {
+          R.remoteStream = null;
+          R.hasRemoteStream = false;
+          syncRemoteTile();
+        }
+        paintPeerFrame();
+      });
+
+      LC.sfu.on('state', function (info) {
+        R.peerState = info.state === 'connected' ? 'connected'
+          : info.state === 'disconnected' ? 'closed' : 'connecting';
+        paintRemoteState({ state: R.peerState, turn: true });
+        paintTransport();
+      });
+
+      // Egress state comes from the media server, so both sides always know.
+      LC.sfu.on('recording', function (info) {
+        R.roomRecording = info.active;
+        paintState();
+        if (R.tab === 'notes') paintRecordingPanel();
+      });
+    }
+
+    paintTransport();
+    LC.sfu.connect({ url: creds.url, token: creds.token, stream: R.stream })
+      .then(function () {
+        R.peerState = 'connected';
+        paintTransport();
+        paintRemoteState({ state: 'connected', turn: true });
+      })
+      .catch(function (err) {
+        // Falling back silently would leave a class unable to see each other.
+        R.transport = 'p2p';
+        R.canRecord = false;
+        paintTransport();
+        LC.app.toast('warn', 'Media server unavailable',
+          err.message + ' Falling back to a direct connection — this class cannot be recorded.');
+        if (R.peerPresent) startPeer(null);
+      });
+  }
+
+  /** Says which path the class is on, because it changes what is possible. */
+  function paintTransport() {
+    var el = document.getElementById('transport-tag');
+    if (!el) return;
+    if (R.transport === 'sfu') {
+      el.innerHTML = '<span class="pill pill-math" title="Media routes through the media server, so the class can be recorded">' +
+        'media server' + (R.canRecord ? '' : ' · no storage') + '</span>';
+    } else if (R.transport === 'p2p') {
+      el.innerHTML = '<span class="pill pill-neutral" title="Browser to browser. The server sees no media, so this class cannot be recorded">' +
+        'peer to peer</span>';
+    } else {
+      el.innerHTML = '';
+    }
   }
 
   /* ====================== peer connection ====================== */
@@ -741,7 +858,14 @@
         '<div class="row-between"><span class="muted">This session</span>' +
         '<span class="mono" style="font-weight:600">' + minutes + ' min → ' + F.bytes(info.bytes) + '</span></div>' +
         '<div class="panel" style="background:var(--card)">' + rows + '</div>' +
-        (info.configured
+        (info.configured && R.transport !== 'sfu'
+          ? '<div class="flag"><b>This class is on a direct connection</b><div>Media is going browser to browser, ' +
+            'so the server has no stream to record. A class is routed through the media server from the moment it ' +
+            'starts, or not at all — switching mid-call would drop both participants.</div></div>'
+          : info.configured && !R.canRecord
+          ? '<div class="flag"><b>Nowhere to put the file</b><div>The media server is connected, but recordings are ' +
+            'uploaded straight to object storage, so S3_BUCKET and its credentials must be set on the server.</div></div>'
+          : info.configured
           ? (me.role === 'teacher' || me.role === 'owner'
               ? '<div class="row" style="gap:8px">' +
                 (R.roomRecording
@@ -1311,6 +1435,7 @@
     'toggle-mic': function (el) {
       R.micOn = !R.micOn;
       if (R.stream) R.stream.getAudioTracks().forEach(function (t) { t.enabled = R.micOn; });
+      if (R.transport === 'sfu') LC.sfu.setEnabled('audio', R.micOn);
       el.textContent = R.micOn ? 'Mute' : 'Unmute';
       el.classList.toggle('btn-danger', !R.micOn);
       paintState();
@@ -1318,6 +1443,7 @@
     'toggle-cam': function (el) {
       R.camOn = !R.camOn;
       if (R.stream) R.stream.getVideoTracks().forEach(function (t) { t.enabled = R.camOn; });
+      if (R.transport === 'sfu') LC.sfu.setEnabled('video', R.camOn);
       var off = document.getElementById('local-off');
       if (off) off.classList.toggle('hide', R.camOn);
       el.textContent = R.camOn ? 'Camera off' : 'Camera on';
@@ -1342,7 +1468,8 @@
       LC.app.closeModal();
       getStream().then(function (stream) {
         attachStream();
-        return LC.webrtc.replaceTracks(stream).then(function (swapped) {
+        var swap = R.transport === 'sfu' ? LC.sfu.replaceTracks(stream) : LC.webrtc.replaceTracks(stream);
+        return swap.then(function (swapped) {
           LC.app.toast('ok', 'Devices switched', swapped
             ? 'The far side saw no interruption — the track was replaced on the live connection.'
             : 'Now using your selected camera and microphone.');

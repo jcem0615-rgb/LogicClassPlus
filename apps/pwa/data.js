@@ -564,6 +564,24 @@
     return api.post('/billing/invoices/' + id + '/remind', {}).then(refresh);
   }
 
+  /* ======================== media transport ========================
+     Which path a classroom uses is the server's call: with a media server
+     configured we publish into it (and can therefore record), without one we
+     connect the two browsers directly. */
+  function sfuCredentials(sessionId) {
+    if (!isRemote()) {
+      return Promise.resolve({ available: false, reason: 'No server is connected.' });
+    }
+    return api.get('/realtime/sfu/' + sessionId).then(function (r) {
+      return {
+        available: true, url: r.url, token: r.token,
+        room: r.room, canRecord: r.canRecord
+      };
+    }).catch(function (err) {
+      return { available: false, reason: err.message };
+    });
+  }
+
   /* ===================== pronunciation scoring ===================== */
   function speechStatus() {
     if (!isRemote()) {
@@ -688,6 +706,7 @@
     runPayrollBatch: runPayrollBatch, payInvoice: payInvoice, remindInvoice: remindInvoice,
     markNotificationsRead: markNotificationsRead, subscribePush: subscribePush,
     estimateRecording: estimateRecording, startRecording: startRecording, stopRecording: stopRecording,
+    sfuCredentials: sfuCredentials,
     speechStatus: speechStatus, assessPronunciation: assessPronunciation,
     pronunciationAttempts: pronunciationAttempts
   };

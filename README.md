@@ -47,9 +47,15 @@ is Teacher/Student only and new accounts sit at `PENDING` until the Owner
 approves them.
 
 To see a real two-person classroom, sign in as the teacher in one browser and the
-student in another, and open the same session: peer-to-peer video and audio, a
+student in another, and open the same session: live video and audio, a
 whiteboard that draws on both screens, and a shared document you can type into
 from both sides at once with each other's cursors visible.
+
+**Two media paths, and the server picks.** With LiveKit configured, both
+participants publish into it, which is what makes recording possible; without
+it they connect directly to each other and cannot be recorded. The classroom
+shows which one it is on, next to the timer. See
+[`docs/recording.md`](./docs/recording.md).
 
 The client needs no build to run. The one generated file is
 `apps/pwa/vendor/editor.bundle.js` — Tiptap, ProseMirror and Yjs bundled with
@@ -70,6 +76,8 @@ node apps/server/test/smoke.mjs      # API + sockets, needs the server running
 node apps/server/test/collab.mjs    # live co-editing, needs both servers running
 node apps/server/test/speech.mjs   # pronunciation scoring against a stand-in Azure
 node apps/server/test/speech-ui.mjs # the drill, driven through a real browser
+node apps/server/test/recording.mjs # egress control plane + signed webhooks
+node apps/server/test/sfu.mjs      # two browsers through a real LiveKit server
 ```
 
 The browser-driven tests need Playwright's chromium (`npx playwright install
@@ -136,10 +144,12 @@ Read [`docs/00-status.md`](./docs/00-status.md) — it tracks every phase in the
 handoff and is explicit about the three places this departs from the specified
 stack and why. In short:
 
-- **Recording is wired to LiveKit but unproven** — there was no live LiveKit
-  server to test against, and media still flows peer-to-peer, so nothing reaches
-  the SFU yet. [`docs/recording.md`](./docs/recording.md) covers setup and sizing:
-  a 3-hour class is about **2.15 GB** at 720p, 67 MB audio-only.
+- **Recording works up to the egress worker.** Classes publish into LiveKit
+  when it is configured, and LiveKit accepts the egress request — both verified
+  against a real server. The worker that writes the file is Docker-only and was
+  not runnable here, so that last hop is untested.
+  [`docs/recording.md`](./docs/recording.md) covers setup, sizing (a 3-hour
+  class is about **2.15 GB** at 720p, 67 MB audio-only) and how to check it.
 - **Pronunciation scoring is wired to Azure Speech** but has not run against
   the live service from here. [`docs/pronunciation.md`](./docs/pronunciation.md)
   covers setup, cost and — importantly, since many of these students are

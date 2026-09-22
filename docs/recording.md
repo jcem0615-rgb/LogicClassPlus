@@ -6,6 +6,19 @@ Peer-to-peer WebRTC sends media browser to browser. The server relays signalling
 only — it never sees a frame, so there is nothing for it to record. Recording
 therefore needs an SFU that the media actually flows through.
 
+**Which transport a class uses is decided when it starts.** With LiveKit
+configured, both participants publish into it and the class can be recorded at
+any moment; without it they connect directly and no recording is possible. The
+classroom says which one it is on, next to the timer. Switching mid-call would
+mean renegotiating both browsers and dropping the class for several seconds, so
+it is not offered — a class is on the media server from the first second or not
+at all.
+
+The cost of routing through an SFU is one extra hop and a server that has to be
+running. The benefit is recording, and headroom: the same path carries a third
+participant, a screen share, or simulcast layers, none of which a mesh of
+direct connections does well.
+
 **LiveKit is what is wired here** (`RECORDING_PROVIDER=livekit`). It is open
 source and self-hostable, and its Egress service composites both participants
 into one file and uploads it straight to your bucket, so recordings never pass
@@ -95,21 +108,44 @@ Then: `POST /api/recordings/:sessionId/start` and `/stop`. On `egress_ended`
 the webhook fills `recordingUrl`, `recordingBytes` and `recordingSeconds` on the
 session and notifies the teacher.
 
-## What is not built
+## What is proven, and what is not
 
-The browsers still connect **peer-to-peer**, so there is nothing flowing through
-LiveKit to record yet. `GET /api/recordings/token/:sessionId` mints the join
-token for it; the remaining work is a client path that publishes into the SFU
-instead of opening an `RTCPeerConnection` when recording is enabled. The egress
-control plane, webhook, storage accounting and consent notifications above are
-written and type-checked, but **untested against a live LiveKit server** — there
-was none to test against here. Treat that integration as unproven until you run
-it once.
+Verified here against a real LiveKit server (1.12.0, run locally):
 
-## Consent
+- Our access tokens are accepted — the grants are right.
+- Two browsers join the room, publish two tracks each, subscribe to each other
+  and play real frames. `test/sfu.mjs` asserts all of that.
+- LiveKit accepts our `StartRoomCompositeEgress` call: it authenticates the
+  request, parses the payload, resolves the room and dispatches the job.
 
-Starting a recording notifies the other participant, every time, in-app and by
-push. That is not a nicety: in much of the EU, in California, and in several
-other jurisdictions, recording someone without telling them is unlawful. Do not
-remove it, and check the rules where your students actually are — this platform
-spans timezones, and so does its legal exposure.
+Verified against a stand-in (`test/recording.mjs`, 23 assertions): the egress
+request we send field by field, the egress id being stored, the signed webhook
+that fills in the file, rejection of forged and wrongly-signed webhooks, the
+consent notice to the student, repeat recordings in one session, and the
+storage accounting.
+
+**Not verified: the recording itself.** The egress worker is a separate service
+that ships as a Docker image needing Redis, Chrome and ffmpeg, and there was no
+Docker daemon in the environment this was built in. With no worker running,
+LiveKit answers `no response from servers` — the request is accepted and
+dispatched, and nothing picks it up. Everything either side of that worker is
+tested; the worker's own output is not. Run it once yourself before promising
+recordings to anyone:
+
+```bash
+docker run --rm --network host \
+  -e EGRESS_CONFIG_BODY="$(cat egress.yaml)" \
+  livekit/egress
+```
+
+with `egress.yaml` pointing `redis` and `api_key`/`api_secret` at your LiveKit.
+Then start a recording from a class and check the file lands in your bucket.
+
+## Version skew
+
+`livekit-client` and `livekit-server` negotiate over a versioned signalling
+path. Client 2.2x asks for `/rtc/v1`, which server 1.8 answers with a 404 —
+the call then half-works: participants connect and subscribe, but publishing
+times out. It looks like a media problem and is not one. Keep the server
+reasonably current with the bundled client, and check the browser console for
+`/rtc/v1 ... 404` when media will not publish.

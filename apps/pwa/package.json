@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "npx --yes serve . -l 4000 --no-clipboard",
     "start": "npx --yes serve . -l 4000 --no-clipboard",
-    "build": "esbuild src/editor-entry.js --bundle --minify --format=iife --target=es2019 --outfile=vendor/editor.bundle.js"
+    "build": "esbuild src/editor-entry.js --bundle --minify --format=iife --target=es2019 --outfile=vendor/editor.bundle.js && esbuild src/livekit-entry.js --bundle --minify --format=iife --target=es2019 --outfile=vendor/livekit.bundle.js"
   },
   "devDependencies": {
     "@tiptap/core": "^2.27.3",
@@ -16,6 +16,7 @@
     "@tiptap/starter-kit": "^2.27.3",
     "esbuild": "^0.24.2",
     "lib0": "^0.2.117",
+    "livekit-client": "^2.22.3",
     "y-protocols": "^1.0.7",
     "yjs": "^13.6.32"
   }

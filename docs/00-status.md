@@ -21,18 +21,19 @@ the tiebreaker, exactly as the handoff says.
 | 6 | English suite — collaborative doc, audio recorder, pronunciation stub | **Done.** Tiptap on a shared Yjs document with live cursors, merged and persisted by the server; pronunciation scored by Azure Speech with per-word and per-phoneme detail, stored as attempts. See [`pronunciation.md`](./pronunciation.md). |
 | 7 | Attendance & payroll | **Done.** Clock in/out, grace window, late penalty, no-show forfeit, batch generation with frozen figures. |
 | 8 | Billing | **Done.** Invoices, PaymentIntent creation, signature-verified `payment_intent.succeeded` webhook. Needs your Stripe keys. |
-| 9 | Recording | **Decided and wired, not proven.** LiveKit Egress: control plane, signed webhook, storage accounting and consent notices are written and type-checked, but there was no live LiveKit server to test against, and the browsers still connect peer-to-peer so nothing flows through the SFU yet. See [`recording.md`](./recording.md). |
+| 9 | Recording | **Built and tested up to the egress worker.** Classes now publish into LiveKit when it is configured, verified with two browsers against a real server; LiveKit accepts our token and our egress request. The worker that produces the file is Docker-only and could not be run here, so the MP4 itself is untested. See [`recording.md`](./recording.md). |
 | 10 | PWA polish | **Done.** Manifest, service worker, install prompt, offline outbox. |
 
 ## Open decisions, unchanged from the handoff's gap list
 
-- **Server-side call recording**: LiveKit is now the wired provider, and
-  `docs/recording.md` covers setup and what a recording costs to store (a
-  3-hour class is about 2.15 GB at 720p). Two caveats stand: the integration is
-  unproven against a live LiveKit server, and media still flows peer-to-peer, so
-  the client must publish into the SFU before there is anything to record. The
-  "Record me" button in the classroom captures *your own* tracks with
-  `MediaRecorder` and is not a class recording.
+- **Server-side call recording**: LiveKit is the provider, and a class routes
+  through it whenever it is configured. Tested against a real LiveKit server up
+  to the point where the egress worker takes over; that worker is Docker-only
+  and could not be run here, so the file it produces is the one untested link.
+  `docs/recording.md` covers setup, sizing (a 3-hour class is about 2.15 GB at
+  720p) and how to check the worker yourself. The "Record me" button in the
+  classroom captures *your own* tracks with `MediaRecorder` and is not a class
+  recording.
 - **Pronunciation scoring** is wired to Azure Speech and no longer invents
   anything: with a key configured it returns real per-word and per-phoneme
   scores, and without one it shows no score at all. It has not run against the
