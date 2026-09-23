@@ -19,12 +19,14 @@ services:
     branch: claude/laughing-tesla-xh39my
     healthCheckPath: /api/health
 
-    # Scoped to the server workspace: a root `npm ci` also installs apps/web's
-    # Next.js and pdf.js, which this service never runs, and the free build
-    # instance has 512 MB to do it in. NODE_VERSION below pins the npm that
-    # supports this flag combination.
+    # `--include=dev` is load-bearing: NODE_ENV=production below is meant for
+    # the running server, but npm reads it too and omits every devDependency,
+    # which is where typescript and the @types/* packages live. Without this
+    # the install succeeds and then tsc cannot find a declaration file for
+    # express. Scoped to the server workspace because a root `npm ci` also
+    # drags in apps/web's Next.js and pdf.js, which this service never runs.
     buildCommand: >-
-      npm ci --workspace apps/server --include-workspace-root &&
+      npm ci --include=dev --workspace apps/server --include-workspace-root &&
       npm run -w apps/server prisma:generate &&
       npm run -w apps/server prisma:deploy &&
       npm run -w apps/server build
