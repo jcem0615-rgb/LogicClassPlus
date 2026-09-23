@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useStore } from '@/lib/store';
-import { api, apiUrl, defaultApiUrl, setApiUrl } from '@/lib/api';
+import { api, apiCameFromLink, apiUrl, defaultApiUrl, setApiUrl } from '@/lib/api';
 import { Button, Field, Flag, Modal } from '@/components/ui';
 import type { Subject } from '@/lib/types';
 
@@ -30,17 +30,21 @@ export default function AuthPage() {
     if (store.ready && store.user) router.replace('/dashboard');
   }, [store.ready, store.user, router]);
 
-  async function signIn(e: React.FormEvent) {
-    e.preventDefault();
+  async function signInWith(addr: string, pass: string) {
     setError(''); setBusy(true);
     try {
-      const user = await store.signIn(email, password);
+      const user = await store.signIn(addr, pass);
       store.toast('ok', 'Signed in', `Welcome back, ${user.name.split(' ')[0]}.`);
       router.push('/dashboard');
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
     }
+  }
+
+  async function signIn(e: React.FormEvent) {
+    e.preventDefault();
+    await signInWith(email, password);
   }
 
   async function register(e: React.FormEvent) {
@@ -148,11 +152,15 @@ export default function AuthPage() {
           )}
 
           <div className="rounded-sm border border-dashed border-line-2 bg-card-2 px-3.5 py-3">
-            <div className="eyebrow mb-1.5">Demo accounts — click to fill</div>
+            <div className="eyebrow mb-1.5">Demo accounts — click to sign in</div>
             {DEMO.map(([label, addr, pass]) => (
-              <button key={addr} type="button"
-                onClick={() => { setMode('login'); setEmail(addr); setPassword(pass); }}
-                className="flex w-full justify-between gap-3 py-1 font-mono text-[12.5px] text-ink-2 hover:text-brand"
+              <button key={addr} type="button" data-demo={addr} disabled={busy}
+                onClick={() => {
+                  setMode('login');
+                  setEmail(addr); setPassword(pass);
+                  void signInWith(addr, pass);
+                }}
+                className="flex w-full justify-between gap-3 py-1 font-mono text-[12.5px] text-ink-2 hover:text-brand disabled:opacity-60"
               >
                 <span>{label}</span><span>{addr}</span>
               </button>
@@ -198,16 +206,45 @@ function ApiPanel() {
   const [open, setOpen] = useState(false);
   const [probe, setProbe] = useState<'checking' | 'up' | 'down'>('checking');
 
-  const check = useRef((next: string) => {
-    setProbe('checking');
-    void api.health()
-      .then(() => setProbe('up'))
-      .catch(() => setProbe('down'));
-    setUrl(next);
-    setDraft(next);
-  });
+  const [fellBack, setFellBack] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  // Falling back is for an address this browser inherited from an earlier
+  // visit and that has since died. An address someone typed, or put in the
+  // link they are opening, is a deliberate choice: report that it is not
+  // answering rather than quietly substituting something else.
+  const allowFallback = useRef(!apiCameFromLink());
 
-  useEffect(() => { check.current(apiUrl()); }, []);
+  useEffect(() => {
+    let alive = true;
+
+    const show = () => { setUrl(apiUrl()); setDraft(apiUrl()); };
+    const reachable = () => api.health().then(() => true).catch(() => false);
+
+    void (async () => {
+      setProbe('checking');
+      show();
+
+      if (await reachable()) { if (alive) setProbe('up'); return; }
+      if (!alive) return;
+
+      // A stored address outlives whatever it pointed at. When it stops
+      // answering, this browser would otherwise be stuck on a dead host
+      // forever, with a perfectly good default sitting unused in the build.
+      if (allowFallback.current && apiUrl() !== defaultApiUrl()) {
+        setApiUrl('');
+        show();
+        if (await reachable()) {
+          if (alive) { setFellBack(true); setProbe('up'); }
+          return;
+        }
+        if (!alive) return;
+      }
+
+      setProbe('down');
+    })();
+
+    return () => { alive = false; };
+  }, [attempt]);
 
   const tone = probe === 'up' ? 'text-ok' : probe === 'down' ? 'text-crit' : 'text-ink-3';
   const label = probe === 'up' ? 'answering' : probe === 'down' ? 'not reachable' : 'checking…';
@@ -229,7 +266,9 @@ function ApiPanel() {
             e.preventDefault();
             setApiUrl(draft);
             setOpen(false);
-            check.current(apiUrl());
+            setFellBack(false);
+            allowFallback.current = false;
+            setAttempt((n) => n + 1);
           }}
         >
           <input
@@ -245,6 +284,13 @@ function ApiPanel() {
           <span className={tone}>· {label}</span>
         </div>
       )}
+
+      {fellBack ? (
+        <p className="mt-1.5 text-ink-3">
+          The address this browser had saved stopped answering, so it is back on
+          the one this build ships with.
+        </p>
+      ) : null}
 
       {probe === 'down' ? (
         <p className="mt-1.5 text-ink-3">

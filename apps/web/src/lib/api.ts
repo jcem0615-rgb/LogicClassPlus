@@ -41,6 +41,16 @@ export function setApiUrl(url: string): void {
   } catch { /* private window */ }
 }
 
+let adoptedFromLink = false;
+
+/**
+ * Whether this page load was handed an address in its link, rather than
+ * inheriting one this browser saved earlier. An address someone put in a link
+ * is a deliberate choice and is treated like one that was typed: if it does
+ * not answer, say so instead of quietly substituting something else.
+ */
+export const apiCameFromLink = (): boolean => adoptedFromLink;
+
 /**
  * Adopts `?api=https://host` from the address bar, so a working link can be
  * shared rather than a link plus an instruction to go change a setting.
@@ -50,6 +60,7 @@ export function adoptApiFromQuery(): void {
   const wanted = new URLSearchParams(window.location.search).get('api');
   if (!wanted) return;
   setApiUrl(wanted);
+  adoptedFromLink = true;
   const url = new URL(window.location.href);
   url.searchParams.delete('api');
   window.history.replaceState(null, '', url.toString());

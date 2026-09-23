@@ -223,6 +223,39 @@ ok('an API that is not there is reported, not silently failed',
   /not reachable/.test((await visitor.textContent('[data-panel=api]')).replace(/\s+/g, ' ')));
 await visitor.close();
 
+console.log('\n6. A saved API address that dies does not brick the browser');
+// The exact failure this guards: a browser holds an address for a host that
+// has since gone away. Without a fallback that browser can never sign in
+// again, however healthy the real API is.
+const stranded = await open('stranded');
+await stranded.evaluate(() => localStorage.setItem('logicclass.api', 'https://gone.invalid.example'));
+await stranded.goto(WEB, { waitUntil: 'networkidle' });
+await stranded.waitForTimeout(6000);
+const healed = (await stranded.textContent('[data-panel=api]')).replace(/\s+/g, ' ');
+ok('a dead saved address falls back to the build default',
+  healed.includes(API) && /answering/.test(healed), healed.slice(0, 200));
+ok('and says so rather than silently changing under you',
+  /stopped answering/.test(healed), healed.slice(0, 200));
+
+// A bad address typed by hand is a different case: say so, do not undo it.
+await stranded.click('[data-panel=api] button');
+await stranded.fill('[data-panel=api] input', 'http://127.0.0.1:4999');
+await stranded.click('[data-panel=api] button[type=submit]');
+await stranded.waitForTimeout(3000);
+const typed = (await stranded.textContent('[data-panel=api]')).replace(/\s+/g, ' ');
+ok('an address typed by hand is reported, not quietly reverted',
+  /not reachable/.test(typed) && typed.includes('127.0.0.1:4999'), typed.slice(0, 200));
+await stranded.close();
+
+console.log('\n7. Demo accounts sign in on click');
+const demo = await open('demo');
+await demo.click('[data-demo="daniel@logicclass.plus"]');
+await demo.waitForURL('**/dashboard', { timeout: 20_000 });
+await demo.waitForTimeout(1500);
+ok('one click on a demo row signs that account in',
+  /Classes today|Taught this week/.test((await demo.textContent('main')).replace(/\s+/g, ' ')));
+await demo.close();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');
 await browser.close();
