@@ -173,6 +173,29 @@ await teacher.waitForTimeout(2000);
 const notes = (await teacher.textContent('main')).replace(/\s+/g, ' ');
 ok('the session panel sizes a recording', /This session/.test(notes) && /min →/.test(notes), notes.slice(0, 160));
 
+// The class clock is what a teacher watches to know how much of a booked hour
+// is left, and what the business bills against. Both properties matter: it has
+// to count against the booking, and it must not restart when a tab closes.
+const clock = (await teacher.textContent('[data-testid=class-clock]')).replace(/\s+/g, ' ');
+ok('the class clock counts against the booked length',
+  /Class time/.test(clock) && /\/ \d\d:\d\d/.test(clock) && /left of \d+ minutes/.test(clock), clock);
+
+const before = await teacher.textContent('[data-testid=class-elapsed]');
+const seconds = (t) => t.split(':').reduce((acc, part) => acc * 60 + Number(part), 0);
+
+// Closing the tab mid-class and coming back is the accident this guards: the
+// clock is anchored to the server's joinedAt, so it continues rather than
+// restarting at zero.
+await teacher.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await teacher.waitForTimeout(4000);
+await teacher.goto(`${WEB}/room/${sessionId}`, { waitUntil: 'networkidle' });
+await teacher.waitForSelector('#hw-join', { timeout: 20_000 });
+await teacher.click('#hw-join');
+await teacher.waitForTimeout(3500);
+const after = await teacher.textContent('[data-testid=class-elapsed]');
+ok('leaving and re-entering continues the class rather than restarting it',
+  seconds(after) >= seconds(before), `${before} -> ${after}`);
+
 await teacher.screenshot({ path: (process.env.SHOT_DIR || '/tmp') + '/web-room.png' });
 await teacher.goto(`${WEB}/dashboard`, { waitUntil: 'networkidle' });
 await teacher.screenshot({ path: (process.env.SHOT_DIR || '/tmp') + '/web-dashboard.png' });

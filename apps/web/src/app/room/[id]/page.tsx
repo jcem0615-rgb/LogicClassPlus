@@ -56,6 +56,8 @@ export default function RoomPage() {
   const [camOn, setCamOn] = useState(true);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
+  /** server clock − this browser's clock, so both sides read the same elapsed time. */
+  const [skew, setSkew] = useState(0);
   const [transport, setTransport] = useState<'sfu' | 'p2p' | null>(null);
   const [canRecord, setCanRecord] = useState(false);
   const [peerState, setPeerState] = useState<string | null>(null);
@@ -137,6 +139,17 @@ export default function RoomPage() {
     return () => clearInterval(id);
   }, [startedAt]);
 
+  // The class clock counts from a timestamp the server owns, so it has to be
+  // read against the server's clock. A laptop running ten minutes fast would
+  // otherwise bill ten minutes that nobody taught.
+  useEffect(() => {
+    let alive = true;
+    void api.health()
+      .then((h) => { if (alive && h.time) setSkew(Date.parse(h.time) - Date.now()); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, []);
+
   /* ---------- room events ---------- */
   useEffect(() => {
     if (!joined || !session) return undefined;
@@ -187,10 +200,12 @@ export default function RoomPage() {
     // Subscribe before joining: the server announces our arrival the moment we
     // join the room, and their offer can land before this resolves.
     setJoined(true);
-    setStartedAt(Date.now());
 
     try {
-      await api.joinSession(session.id);
+      // joinedAt is set once, on the first entry, and survives leaving. Closing
+      // the tab and coming back continues the class instead of restarting it.
+      const { session: live } = await api.joinSession(session.id);
+      setStartedAt(live.joinedAt ? Date.parse(live.joinedAt) : Date.now());
       const loaded = await api.session(session.id);
       setMessages(loaded.messages);
       setDocuments(loaded.documents);
@@ -418,10 +433,15 @@ export default function RoomPage() {
                     : transport === 'p2p' ? <Pill>peer to peer</Pill> : null}
                 </span>
                 <span className="font-mono text-[13px] text-ink-3">
-                  {startedAt ? duration(now - startedAt) : '00:00'}
+                  {startedAt ? duration(now + skew - startedAt) : '00:00'}
                 </span>
               </div>
             </div>
+            <ClassClock
+              elapsedMs={startedAt ? now + skew - startedAt : null}
+              bookedMinutes={session.minutes}
+            />
+
             <div className="flex flex-wrap gap-1.5">
               <Button size="sm" variant={micOn ? 'default' : 'danger'} onClick={() => {
                 const next = !micOn;
@@ -556,5 +576,53 @@ export default function RoomPage() {
         />
       ) : null}
     </Shell>
+  );
+}
+
+/**
+ * How much of the booked class has been used.
+ *
+ * A bare stopwatch answers "how long have I been here", which is not the
+ * question a teacher has mid-class. This answers "how much is left", and says
+ * plainly once the class has run past what the student booked.
+ */
+function ClassClock({ elapsedMs, bookedMinutes }: { elapsedMs: number | null; bookedMinutes: number }) {
+  const bookedMs = bookedMinutes * 60_000;
+  const elapsed = elapsedMs ?? 0;
+  const over = elapsed > bookedMs;
+  const pct = bookedMs > 0 ? Math.min(100, (elapsed / bookedMs) * 100) : 0;
+  const nearly = !over && pct >= 90;
+
+  return (
+    <div data-testid="class-clock" className="flex flex-col gap-1.5 rounded-sm bg-sunk px-3 py-2.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="eyebrow">Class time</span>
+        <span className="font-mono text-[13px]">
+          <span
+            data-testid="class-elapsed"
+            className={over ? 'text-crit' : nearly ? 'text-warn' : 'text-ink'}
+          >
+            {duration(elapsed)}
+          </span>
+          <span className="text-ink-3"> / {duration(bookedMs)}</span>
+        </span>
+      </div>
+
+      <div className="h-1 overflow-hidden rounded-full bg-line-2">
+        <div
+          className={`h-full rounded-full transition-[width] duration-500 ${
+            over ? 'bg-crit' : nearly ? 'bg-warn' : 'bg-brand'}`}
+          style={{ width: `${over ? 100 : pct}%` }}
+        />
+      </div>
+
+      <div data-testid="class-clock-note" className="text-[12px] text-ink-3">
+        {elapsedMs === null
+          ? 'Starts when you enter the room.'
+          : over
+            ? <span className="text-crit">{duration(elapsed - bookedMs)} past the booked {bookedMinutes} minutes.</span>
+            : `${duration(bookedMs - elapsed)} left of ${bookedMinutes} minutes.`}
+      </div>
+    </div>
   );
 }

@@ -123,6 +123,8 @@ export interface RecordingEstimate {
 
 export interface Health {
   ok: boolean;
+  /** Server clock, so a browser with a wrong clock does not misreport elapsed time. */
+  time: string;
   integrations: { stripe: boolean; webPush: boolean; s3: boolean; recording: boolean; speech: boolean };
   policy: { uploadMaxBytes: number; payrollGraceMinutes: number; payrollLatePenalty: number; currency: string };
 }
