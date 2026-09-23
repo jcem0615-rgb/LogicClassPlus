@@ -19,12 +19,12 @@ services:
     branch: claude/laughing-tesla-xh39my
     healthCheckPath: /api/health
 
-    # `npm ci` at the root installs both workspaces. apps/web's dependencies
-    # are dead weight here, but scoping the install to one workspace means
-    # trusting a flag combination across npm versions, and a slower build is
-    # cheaper than a deploy that fails at 2am.
+    # Scoped to the server workspace: a root `npm ci` also installs apps/web's
+    # Next.js and pdf.js, which this service never runs, and the free build
+    # instance has 512 MB to do it in. NODE_VERSION below pins the npm that
+    # supports this flag combination.
     buildCommand: >-
-      npm ci &&
+      npm ci --workspace apps/server --include-workspace-root &&
       npm run -w apps/server prisma:generate &&
       npm run -w apps/server prisma:deploy &&
       npm run -w apps/server build
@@ -33,6 +33,12 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+
+      # Pinned rather than inherited: the build command uses npm workspace
+      # flags, and "whatever Render defaults to this month" is not a thing to
+      # discover from a failed deploy.
+      - key: NODE_VERSION
+        value: "22"
 
       # Render sets PORT itself; the server reads it. Do not pin it here.
 
