@@ -1,0 +1,8 @@
+{
+  // The build compiles only src (so dist/index.js sits where `npm start` looks
+  // for it). The seed is run through tsx and never compiled, but it still has
+  // to typecheck, so it is checked here.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "rootDir": "." },
+  "include": ["src/**/*.ts", "prisma/**/*.ts"]
+}

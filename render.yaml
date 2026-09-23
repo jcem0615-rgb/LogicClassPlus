@@ -1,0 +1,74 @@
+# Render Blueprint for the LogicClass+ API.
+#
+# The client (apps/web) is on Vercel; this is the half Vercel cannot host —
+# Express with Socket.io connections that stay open for the length of a class,
+# and a Postgres pool that has to survive between requests.
+#
+# Deploy: Render dashboard -> New -> Blueprint -> pick this repo. Render reads
+# this file and asks only for the values marked `sync: false`.
+
+services:
+  - type: web
+    name: logicclass-api
+    runtime: node
+    plan: free
+    # The database lives in Supabase's ap-southeast-1. Every request makes
+    # several round trips to it, so the API belongs in the same part of the
+    # world — Oregon would add a quarter-second to every page.
+    region: singapore
+    branch: claude/laughing-tesla-xh39my
+    healthCheckPath: /api/health
+
+    # `npm ci` at the root installs both workspaces. apps/web's dependencies
+    # are dead weight here, but scoping the install to one workspace means
+    # trusting a flag combination across npm versions, and a slower build is
+    # cheaper than a deploy that fails at 2am.
+    buildCommand: >-
+      npm ci &&
+      npm run -w apps/server prisma:generate &&
+      npm run -w apps/server prisma:deploy &&
+      npm run -w apps/server build
+    startCommand: npm run -w apps/server start
+
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Render sets PORT itself; the server reads it. Do not pin it here.
+
+      # Every origin allowed to call the API and open a socket. No trailing
+      # slash — the check is an exact string match against the Origin header.
+      - key: WEB_ORIGIN
+        value: https://logicclass-plus-web.vercel.app,https://logicclass-plus-web-jcem0615-5649s-projects.vercel.app
+
+      # Supabase's direct host (db.<ref>.supabase.co) is IPv6-only and Render
+      # egresses over IPv4, so this must be the *pooler* string, session mode:
+      #   postgresql://<role>.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?schema=logicclass
+      - key: DATABASE_URL
+        sync: false
+
+      # Generated once by Render and never printed here. Changing it signs
+      # everyone out, which is the correct behaviour if it ever leaks.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES_IN
+        value: 7d
+
+      - key: PAYROLL_GRACE_MINUTES
+        value: "5"
+      - key: PAYROLL_LATE_PENALTY
+        value: "1.5"
+      - key: PAYROLL_CURRENCY
+        value: USD
+      - key: UPLOAD_MAX_BYTES
+        value: "20971520"
+
+      # Free instances have an ephemeral disk, so uploads written here do not
+      # survive a restart. Set the S3_* variables to keep them.
+      - key: LOCAL_UPLOAD_DIR
+        value: ./var/uploads
+
+      - key: STUN_URLS
+        value: stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302
+      - key: RECORDING_PROVIDER
+        value: none

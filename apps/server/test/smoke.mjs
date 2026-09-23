@@ -1,6 +1,6 @@
 import { io } from 'socket.io-client';
 
-const API = 'http://localhost:4001/api';
+const API = (process.env.API_URL || 'http://localhost:4001') + '/api';
 let pass = 0, fail = 0;
 const ok = (name, cond, extra='') => { if (cond) { pass++; console.log(`  ok   ${name}`); }
   else { fail++; console.log(`  FAIL ${name} ${extra}`); } };

@@ -79,24 +79,61 @@ no native build step, and it is the algorithm Node's own docs recommend for this
 
 ## Hosted
 
-`apps/web` is deployed on Vercel from this branch:
+Two halves, two hosts, because one host cannot do both.
 
-**https://logicclass-plus-web.vercel.app**
+| | Where | Why there |
+| --- | --- | --- |
+| `apps/web` | Vercel — **https://logicclass-plus-web.vercel.app** | Static client, nothing to keep alive |
+| `apps/server` | Render (blueprint in [`render.yaml`](../render.yaml)) | Sockets that stay open for a whole class, and a Postgres pool that survives between requests |
+| Database | Supabase, `logicclass` schema | Managed Postgres |
 
-What that URL is and is not:
+### Why the API is not on Vercel
 
-- It is the **client only**. `apps/server` is Express + Socket.io with
-  long-lived WebSocket connections and a Postgres connection — Vercel's
-  serverless functions cannot hold either, so the API is not deployed there and
-  cannot be. Host it on anything that runs a normal Node process (Railway,
-  Render, Fly.io, a VM) or run it locally.
-- The client asks which API to use rather than assuming. The sign-in page names
-  the address it is pointed at and probes `/api/health`, so a missing API reads
-  as *not reachable* instead of as a broken sign-in. Change it there, or hand
-  the address over in the link: `…vercel.app/?api=https://your-api.example.com`.
-- Two things the API needs before the hosted client can reach it:
-  add the Vercel origin to `WEB_ORIGIN` (comma-separated, no trailing slash)
-  so CORS and the socket handshake accept it, and serve the API over **https**
-  if you want Safari to talk to it — `http://localhost:4001` works from the
-  https page in Chrome, Edge and Firefox, which treat localhost as a secure
-  origin, but Safari blocks it as mixed content.
+Vercel does support WebSockets now, and it still cannot host this API. Two
+numbers from their own documentation:
+
+- *"WebSocket connections close when a Vercel Function reaches its maximum
+  duration"* — and max duration on Hobby is **300s default and maximum**. Every
+  participant is dropped every five minutes.
+- *"New WebSocket connections are not guaranteed to reach the same Vercel
+  Function instance."* For a 1-on-1 class that is fatal: the two participants
+  can land on different instances, so the WebRTC offer never reaches the far
+  side, and neither do whiteboard strokes, chat, or Yjs updates.
+
+Vercel's own remedy is to move rooms and pub/sub into an external store. That
+is a real architecture, and it is not this one — this server keeps the
+authoritative Y.Doc in memory on purpose.
+
+### Deploying the API
+
+Render dashboard → **New → Blueprint** → pick this repo. `render.yaml` sets
+everything except the one value Render asks for: `DATABASE_URL`.
+
+Supabase's direct host (`db.<ref>.supabase.co`) is **IPv6-only** and Render
+egresses over IPv4, so it must be the *pooler* string in session mode:
+
+```
+postgresql://<role>.<ref>:<password>@aws-0-<region>.pooler.supabase.com:5432/postgres?schema=logicclass
+```
+
+The blueprint runs `prisma migrate deploy` on every build, so the schema
+follows the code. Seeding demo data is a one-off — `npm run -w apps/server
+seed` — and only wanted the first time.
+
+Two things to know about the free instance type: it **spins down after ~15
+minutes idle**, so the first request after a quiet spell waits out a cold start
+and open sockets drop; and its disk is ephemeral, so uploads need the `S3_*`
+variables to survive a restart. The paid Starter instance fixes the first.
+
+### Pointing the client at it
+
+The client reads its API address at runtime, so no rebuild is needed: open
+`…vercel.app/?api=https://your-api.onrender.com` once and the browser keeps it.
+To bake it in as the default instead, set `NEXT_PUBLIC_API_URL` on the Vercel
+project and redeploy.
+
+Whatever the address ends up being, it has to appear in the API's `WEB_ORIGIN`
+(comma-separated, no trailing slash) or CORS and the socket handshake refuse
+it. And if Safari is in scope, the API has to be https — Safari blocks
+`http://localhost` from an https page as mixed content where Chrome, Edge and
+Firefox allow it.
