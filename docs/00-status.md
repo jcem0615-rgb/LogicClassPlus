@@ -63,11 +63,12 @@ The handoff says *do not substitute* the stack. Three departures, each deliberat
    separate auth, whereas this rides the channel whose session membership the
    gateway has already verified. It also let the server keep the authoritative
    document and persist it to Postgres, which a relay cannot do.
-3. **The client is a static PWA, not Next.js App Router.** `apps/web` as
-   specified does not exist. What is here is `apps/pwa`: the full feature
-   surface, with one bundled file (Tiptap, ProseMirror and Yjs) and no
-   framework build. If you want the Next.js version, this is the
-   reference implementation to port — the API it talks to will not change.
+3. ~~**The client is a static PWA, not Next.js App Router.**~~ **Resolved.**
+   `apps/web` now exists as the handoff specifies: Next.js 14 App Router,
+   TypeScript strict, Tailwind, next-pwa. `apps/pwa` — the dependency-free
+   static client that came first — is still in the tree and still works; the
+   two talk to the same API. Deploy `apps/web`; keep `apps/pwa` if you want a
+   copy that runs from any file server with no build step.
 
 One correction the build forced, worth knowing about: `ClassRequest.minutes`
 originally accepted only 30/45/60/90, so a 3-hour class could not be booked at
@@ -75,3 +76,27 @@ all. It now accepts 15 minutes to 8 hours in quarter-hour steps.
 
 Password hashing uses Node's built-in `scrypt` rather than adding bcrypt/argon2:
 no native build step, and it is the algorithm Node's own docs recommend for this.
+
+## Hosted
+
+`apps/web` is deployed on Vercel from this branch:
+
+**https://logicclass-plus-web.vercel.app**
+
+What that URL is and is not:
+
+- It is the **client only**. `apps/server` is Express + Socket.io with
+  long-lived WebSocket connections and a Postgres connection — Vercel's
+  serverless functions cannot hold either, so the API is not deployed there and
+  cannot be. Host it on anything that runs a normal Node process (Railway,
+  Render, Fly.io, a VM) or run it locally.
+- The client asks which API to use rather than assuming. The sign-in page names
+  the address it is pointed at and probes `/api/health`, so a missing API reads
+  as *not reachable* instead of as a broken sign-in. Change it there, or hand
+  the address over in the link: `…vercel.app/?api=https://your-api.example.com`.
+- Two things the API needs before the hosted client can reach it:
+  add the Vercel origin to `WEB_ORIGIN` (comma-separated, no trailing slash)
+  so CORS and the socket handshake accept it, and serve the API over **https**
+  if you want Safari to talk to it — `http://localhost:4001` works from the
+  https page in Chrome, Edge and Firefox, which treat localhost as a secure
+  origin, but Safari blocks it as mixed content.
