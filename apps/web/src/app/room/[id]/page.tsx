@@ -49,6 +49,8 @@ export default function RoomPage() {
   const [joined, setJoined] = useState(false);
   const [tab, setTab] = useState<Tab>('whiteboard');
   const [stream, setStream] = useState<MediaStream | null>(null);
+  /** The live stream, readable without making callbacks depend on render state. */
+  const streamRef = useRef<MediaStream | null>(null);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [devices, setDevices] = useState<{ cams: MediaDeviceInfo[]; mics: MediaDeviceInfo[] }>({ cams: [], mics: [] });
   const [choice, setChoice] = useState<DeviceChoice>({ cam: '', mic: '' });
@@ -104,7 +106,13 @@ export default function RoomPage() {
         video: pick.cam ? { deviceId: { exact: pick.cam } } : true,
         audio: pick.mic ? { deviceId: { exact: pick.mic } } : true,
       });
-      setStream((old) => { old?.getTracks().forEach((t) => t.stop()); return next; });
+      // Stopping tracks is a side effect, so it cannot live inside the updater:
+      // React is free to call updaters more than once, and a replay would stop
+      // the very stream it had just returned.
+      const previous = streamRef.current;
+      streamRef.current = next;
+      setStream(next);
+      if (previous && previous !== next) previous.getTracks().forEach((t) => t.stop());
       setMediaError(null);
       const list = await navigator.mediaDevices.enumerateDevices();
       setDevices({
@@ -278,12 +286,19 @@ export default function RoomPage() {
     peer.current = null;
     void sfu.current?.disconnect();
     sfu.current = null;
-    stream?.getTracks().forEach((t) => t.stop());
+    streamRef.current?.getTracks().forEach((t) => t.stop());
+    streamRef.current = null;
     if (localRecorder.current?.state === 'recording') localRecorder.current.stop();
     if (session) { emit('classroom:leave', session.id); void api.leaveSession(session.id); }
-  }, [session, stream]);
+  }, [session]);
 
-  useEffect(() => () => leave(), [leave]);
+  // `leave` changes identity whenever the session object or the stream does,
+  // and a re-hydration hands back a fresh session on every mutation. Keying the
+  // cleanup on it meant saving a whiteboard tore the class down: peer closed,
+  // tracks stopped, classroom:leave emitted. Only leaving should leave.
+  const leaveRef = useRef(leave);
+  useEffect(() => { leaveRef.current = leave; }, [leave]);
+  useEffect(() => () => leaveRef.current(), []);
 
   /* ---------- actions ---------- */
   function sendChat(e: React.FormEvent) {

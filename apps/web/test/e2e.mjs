@@ -173,6 +173,29 @@ await teacher.waitForTimeout(2000);
 const notes = (await teacher.textContent('main')).replace(/\s+/g, ' ');
 ok('the session panel sizes a recording', /This session/.test(notes) && /min →/.test(notes), notes.slice(0, 160));
 
+// Saving a whiteboard re-hydrates the store, which hands back a fresh session
+// object. That used to re-run the room's cleanup and tear the class down:
+// camera off, peer closed, classroom:leave emitted. The class must survive it.
+await teacher.click('button[data-tab="whiteboard"]');
+await teacher.waitForTimeout(1200);
+const liveBefore = await teacher.evaluate(() => {
+  const v = document.querySelector('video');
+  const s = v && v.srcObject;
+  return s ? s.getTracks().filter((t) => t.readyState === 'live').length : 0;
+});
+await teacher.click('button:has-text("Save to library")');
+await teacher.waitForTimeout(5000);
+const liveAfter = await teacher.evaluate(() => {
+  const v = document.querySelector('video');
+  const s = v && v.srcObject;
+  return s ? s.getTracks().filter((t) => t.readyState === 'live').length : 0;
+});
+ok('saving to the library does not stop the camera',
+  liveBefore > 0 && liveAfter === liveBefore, `live tracks ${liveBefore} -> ${liveAfter}`);
+ok('and does not drop the other participant',
+  /peer to peer|media server/.test((await teacher.textContent('#transport-tag')) || '')
+  && !/Reconnecting|left the room/i.test((await student.textContent('main')).replace(/\s+/g, ' ')));
+
 // The class clock is what a teacher watches to know how much of a booked hour
 // is left, and what the business bills against. Both properties matter: it has
 // to count against the booking, and it must not restart when a tab closes.
