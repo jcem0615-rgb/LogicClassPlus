@@ -11,6 +11,7 @@ import {
 } from '../services/recording.js';
 import { notify } from '../services/notifications.js';
 import { studentIdsIn } from '../lib/sessions.js';
+import { capMs, sweepOverrunningRecordings } from '../services/recording-cap.js';
 import { emitToSession } from '../realtime/gateway.js';
 
 export const recordingsRouter = Router();
@@ -66,6 +67,12 @@ async function handleEgressEvent(event: { event?: string; egressInfo?: Record<st
       recordingUrl: location || null,
       recordingBytes: size ? BigInt(size) : null,
       recordingSeconds: durationNs ? Math.round(durationNs / 1e9) : null,
+      /* The egress is over, so the markers that say one is running have to
+         go. Leaving them set used to be harmless; now the overrun sweep reads
+         them, and a finished recording that still looked live would be sent a
+         StopEgress every minute for an egress that no longer exists. */
+      recordingEgressId: null,
+      recordingStartedAt: null,
     },
   });
 
@@ -91,6 +98,11 @@ recordingsRouter.get('/estimate', validate(z.object({
     preset,
     bytes: estimateBytes(q.minutes, preset),
     perHourBytes: estimateBytes(60, preset),
+    maxMinutes: env.RECORDING_MAX_MINUTES,
+    /* A class booked for longer than one recording may run is not refused —
+       the teacher simply has to start a second recording partway through, and
+       is told so before the class rather than when it cuts out. */
+    exceedsCap: q.minutes > env.RECORDING_MAX_MINUTES,
     presets: Object.fromEntries(
       (Object.keys(PRESETS) as Preset[]).map((key) => [key, {
         label: PRESETS[key].label,
@@ -143,9 +155,10 @@ recordingsRouter.post('/:sessionId/start', requireRole('TEACHER', 'OWNER'), asyn
   }
 
   const egress = await startRecording(session.id);
+  const startedAt = new Date();
   await prisma.classSession.update({
     where: { id: session.id },
-    data: { recordingEgressId: egress.egressId, recordingUrl: null },
+    data: { recordingEgressId: egress.egressId, recordingUrl: null, recordingStartedAt: startedAt },
   });
 
   // Both participants are told, every time. Recording a person silently is not
@@ -162,7 +175,19 @@ recordingsRouter.post('/:sessionId/start', requireRole('TEACHER', 'OWNER'), asyn
     egressId: egress.egressId,
     estimatedBytes: estimateBytes(session.minutes),
     preset: env.RECORDING_PRESET,
+    maxMinutes: env.RECORDING_MAX_MINUTES,
+    stopsAt: new Date(startedAt.getTime() + capMs()).toISOString(),
   });
+}));
+
+/**
+ * Runs the overrun sweep now. The sweeper does this on its own every minute;
+ * this is here so the behaviour can be driven from a test and so an Owner who
+ * can see a stuck recording does not have to wait for the next tick.
+ */
+recordingsRouter.post('/sweep', requireRole('OWNER'), asyncRoute(async (_req, res) => {
+  const stopped = await sweepOverrunningRecordings();
+  res.json({ stopped, maxMinutes: env.RECORDING_MAX_MINUTES });
 }));
 
 recordingsRouter.post('/:sessionId/stop', requireRole('TEACHER', 'OWNER'), asyncRoute(async (req, res) => {
@@ -174,7 +199,7 @@ recordingsRouter.post('/:sessionId/stop', requireRole('TEACHER', 'OWNER'), async
   // The id is cleared so another recording can start straight away. The
   // webhook still finds this session: the file path carries the session id.
   await prisma.classSession.update({
-    where: { id: session.id }, data: { recordingEgressId: null },
+    where: { id: session.id }, data: { recordingEgressId: null, recordingStartedAt: null },
   });
   emitToSession(session.id, 'classroom:recording', { status: 'stopping' });
   res.json({ ok: true, note: 'The file appears once the media server finishes uploading it.' });

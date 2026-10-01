@@ -466,23 +466,95 @@ export default function RoomPage() {
     }, 'image/jpeg', 0.7);
   }
 
-  function toggleLocalRecording() {
+  /**
+   * Record my own camera and microphone to a file.
+   *
+   * This used to hand MediaRecorder no timeslice and push every blob into an
+   * array, which meant the entire recording sat in the tab's memory until it
+   * stopped — around two gigabytes for a three-hour class, long past where a
+   * browser gives up. It also built the file and then dropped it on the
+   * floor: a toast said the clip was ready and there was no way to get it.
+   *
+   * Now it asks for a file up front and streams five-second chunks into it,
+   * so memory stays flat however long the class runs. Where the File System
+   * Access API is missing (Firefox, Safari) it keeps the chunks in memory and
+   * downloads them at the end, which is the old behaviour minus the hoarding:
+   * it stops at a ceiling and says so rather than taking the tab down.
+   */
+  async function toggleLocalRecording() {
     if (localRecorder.current?.state === 'recording') { localRecorder.current.stop(); return; }
     if (!stream || typeof MediaRecorder === 'undefined') {
       store.toast('err', 'Nothing to record', 'Recording needs an active camera or microphone.');
       return;
     }
+
+    const name = `${session?.topic ?? 'class'} ${new Date().toISOString().slice(0, 16)}.webm`
+      .replace(/[\\/:*?"<>|]/g, '-');
+    const picker = (window as unknown as {
+      showSaveFilePicker?: (o: unknown) => Promise<FileSystemFileHandle>;
+    }).showSaveFilePicker;
+
+    let writer: FileSystemWritableFileStream | null = null;
+    if (picker) {
+      try {
+        const handle = await picker({
+          suggestedName: name,
+          types: [{ description: 'WebM video', accept: { 'video/webm': ['.webm'] } }],
+        });
+        writer = await handle.createWritable();
+      } catch {
+        return;   // the save dialog was dismissed; recording never started
+      }
+    }
+
     const rec = new MediaRecorder(stream);
     const chunks: Blob[] = [];
+    let written = 0;
+    /* Only reached without a file handle. Half a gigabyte is roughly forty
+       minutes at this bitrate — enough to be useful, low enough that the tab
+       survives it. */
+    const MEMORY_CEILING = 500e6;
+    let queue: Promise<void> = Promise.resolve();
+
     localRecorder.current = rec;
-    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    rec.ondataavailable = (e) => {
+      if (!e.data.size) return;
+      written += e.data.size;
+      if (writer) {
+        // Serialised: WritableStream rejects a second write while one is
+        // still in flight, and chunks arrive faster than the disk at 1080p.
+        queue = queue.then(() => writer!.write(e.data)).catch(() => undefined);
+        return;
+      }
+      chunks.push(e.data);
+      if (written > MEMORY_CEILING && rec.state === 'recording') {
+        store.toast('warn', 'Local recording stopped at 500 MB',
+          'This browser cannot stream a recording to disk, so it is kept in memory. '
+          + 'Use the class recording for a full-length copy.');
+        rec.stop();
+      }
+    };
     rec.onstop = () => {
       setLocalRecording(false);
+      if (writer) {
+        void queue.then(() => writer!.close()).then(() => {
+          store.toast('ok', 'Local recording saved', `${bytes(written)} written to the file you chose.`);
+        }).catch((err: Error) => {
+          store.toast('err', 'Could not finish the file', err.message);
+        });
+        return;
+      }
       const blob = new Blob(chunks, { type: rec.mimeType || 'video/webm' });
-      store.toast('ok', 'Local clip ready',
-        `${bytes(blob.size)} of your own tracks, kept in this tab only.`);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = name;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      store.toast('ok', 'Local clip downloaded', `${bytes(blob.size)} of your own tracks.`);
     };
-    rec.start();
+    // Five-second chunks: without a timeslice nothing is handed over until
+    // the recording ends, which is the whole problem.
+    rec.start(5_000);
     setLocalRecording(true);
   }
 
@@ -585,7 +657,7 @@ export default function RoomPage() {
               }}>{camOn ? 'Camera off' : 'Camera on'}</Button>
               <Button size="sm" variant={localRecording ? 'danger' : 'default'}
                 title="Records only your own camera and microphone, in this tab"
-                onClick={toggleLocalRecording}>{localRecording ? 'Stop' : 'Record me'}</Button>
+                onClick={() => void toggleLocalRecording()}>{localRecording ? 'Stop' : 'Record me'}</Button>
               <Button size="sm" variant="danger" onClick={() => { leave(); router.push('/classes'); }}>
                 Leave
               </Button>

@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { env, isPushConfigured, isS3Configured, isStripeConfigured } from './env.js';
 import { isRecordingConfigured } from './services/recording.js';
 import { isSpeechConfigured } from './services/speech.js';
+import { startRecordingCapSweeper, stopRecordingCapSweeper } from './services/recording-cap.js';
 import { createApp } from './app.js';
 import { initGateway } from './realtime/gateway.js';
 import { disconnect, prisma } from './prisma.js';
@@ -18,6 +19,9 @@ async function main(): Promise<void> {
   const app = createApp();
   const server = createServer(app);
   initGateway(server);
+  // Runs now as well as on a timer: a restart is exactly when a recording
+  // that should have been stopped is left running with nobody watching.
+  startRecordingCapSweeper();
 
   server.listen(env.PORT, () => {
     const flag = (on: boolean) => (on ? 'on' : 'not configured');
@@ -30,7 +34,8 @@ async function main(): Promise<void> {
       `  stripe     ${flag(isStripeConfigured())}\n` +
       `  web push   ${flag(isPushConfigured())}\n` +
       `  s3         ${flag(isS3Configured())} (falls back to ${env.LOCAL_UPLOAD_DIR})\n` +
-      `  recording  ${env.RECORDING_PROVIDER === 'none' ? 'off — needs an SFU' : flag(isRecordingConfigured())}\n` +
+      `  recording  ${env.RECORDING_PROVIDER === 'none' ? 'off — needs an SFU' : flag(isRecordingConfigured())}`
+      + `${isRecordingConfigured() ? `, up to ${env.RECORDING_MAX_MINUTES} min each` : ''}\n` +
       `  speech     ${flag(isSpeechConfigured())}\n`,
     );
   });
@@ -38,6 +43,7 @@ async function main(): Promise<void> {
   const shutdown = (signal: string) => {
     // eslint-disable-next-line no-console
     console.log(`\n${signal} received, shutting down.`);
+    stopRecordingCapSweeper();
     // Save every open document before the process goes away.
     server.close(() => {
       void flushAll().then(disconnect).then(() => process.exit(0));

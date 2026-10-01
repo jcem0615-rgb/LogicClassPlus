@@ -241,6 +241,9 @@ model ClassSession {
   // gives the server no stream, so these stay null until an SFU fills them.
   recordingUrl      String?
   recordingEgressId String?
+  /// When the running egress was started, so a recording nobody stopped can
+  /// be cut off at the cap instead of billing storage until someone notices.
+  recordingStartedAt DateTime?
   recordingBytes    BigInt?
   recordingSeconds  Int?
   createdAt         DateTime      @default(now())

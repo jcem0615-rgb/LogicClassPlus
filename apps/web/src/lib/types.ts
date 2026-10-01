@@ -128,6 +128,10 @@ export interface SfuCredentials {
 export interface RecordingEstimate {
   minutes: number; preset: string; bytes: number; configured: boolean;
   reason: string | null;
+  /** The longest one recording may run before the server stops it. */
+  maxMinutes: number;
+  /** True when this class is booked for longer than that. */
+  exceedsCap: boolean;
   presets: Record<string, { label: string; bytes: number }>;
 }
 

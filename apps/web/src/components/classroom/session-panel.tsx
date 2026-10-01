@@ -63,8 +63,15 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
           <>
             <div className="flex items-center justify-between">
               <span className="text-ink-2">This session</span>
-              <span className="font-mono font-semibold">
+              <span className="font-mono font-semibold" data-testid="rec-estimate">
                 {session.minutes} min → {bytes(estimate.bytes)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-[13px] text-ink-3">
+              <span>One recording runs for up to</span>
+              <span className="font-mono" data-testid="rec-cap">
+                {Math.floor(estimate.maxMinutes / 60)}h
+                {estimate.maxMinutes % 60 ? ` ${estimate.maxMinutes % 60}m` : ''}
               </span>
             </div>
 
@@ -77,6 +84,14 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
                 </div>
               ))}
             </div>
+
+            {estimate.exceedsCap ? (
+              <Flag title="Longer than one recording">
+                This class is booked for {session.minutes} minutes and a recording runs for at most
+                {' '}{estimate.maxMinutes}. The first one stops at the limit — start a second one
+                then, and you will have the class in two files rather than losing the end of it.
+              </Flag>
+            ) : null}
 
             {!estimate.configured ? (
               <Flag title="Recording is off">{estimate.reason}</Flag>
@@ -109,7 +124,8 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
                         .then((r) => {
                           onRecording(true);
                           store.toast('ok', 'Recording started',
-                            `Expected size: ${bytes(r.estimatedBytes)} at ${r.preset}.`);
+                            `Expected size: ${bytes(r.estimatedBytes)} at ${r.preset}. `
+                            + `It stops by itself after ${r.maxMinutes} minutes.`);
                         })
                         .catch((err) => store.toast('err', 'Recording did not start', (err as Error).message))
                         .finally(() => setBusy(false));
@@ -131,8 +147,8 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
 
         <p className="text-[13px] text-ink-3">
           Your own <b>Record me</b> button in the controls is different: it captures only{' '}
-          <i>your</i> camera and microphone with <span className="font-mono">MediaRecorder</span> and
-          keeps the clip in this tab.
+          <i>your</i> camera and microphone with <span className="font-mono">MediaRecorder</span>,
+          streaming it to a file you choose so a long class does not fill the tab's memory.
         </p>
       </section>
     </div>

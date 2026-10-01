@@ -265,7 +265,10 @@ export const api = {
   recordingEstimate: (minutes: number) =>
     get<RecordingEstimate>(`/recordings/estimate?minutes=${minutes}`),
   startRecording: (sessionId: string) =>
-    post<{ egressId: string; estimatedBytes: number; preset: string }>(`/recordings/${sessionId}/start`),
+    post<{
+      egressId: string; estimatedBytes: number; preset: string;
+      maxMinutes: number; stopsAt: string;
+    }>(`/recordings/${sessionId}/start`),
   stopRecording: (sessionId: string) =>
     post<{ ok: true; note: string }>(`/recordings/${sessionId}/stop`),
   recordingUsage: () => get<{

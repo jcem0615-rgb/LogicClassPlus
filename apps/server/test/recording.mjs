@@ -28,13 +28,16 @@ const ok = (n, c, x = '') => { if (c) { pass++; console.log('  ok   ' + n); } el
 
 /* ---------------- stand-in LiveKit ---------------- */
 let lastEgressRequest = null;
+const stopped = [];
 const EGRESS_ID = 'EG_teststandin001';
 const livekit = createServer((req, res) => {
   const chunks = [];
   req.on('data', (c) => chunks.push(c));
   req.on('end', () => {
     const body = Buffer.concat(chunks).toString('utf8');
-    lastEgressRequest = { url: req.url, headers: req.headers, body: JSON.parse(body || '{}') };
+    const parsed = JSON.parse(body || '{}');
+    if (/StopEgress/.test(req.url || '')) stopped.push(parsed);
+    else lastEgressRequest = { url: req.url, headers: req.headers, body: parsed };
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ egressId: EGRESS_ID, status: 'EGRESS_STARTING' }));
   });
@@ -69,6 +72,16 @@ function webhookToken(rawBody) {
   });
   const sig = createHmac('sha256', SECRET).update(`${header}.${payload}`).digest('base64url');
   return `${header}.${payload}.${sig}`;
+}
+
+/** Backdate a running recording, so the cap can be tested in a second. */
+async function ageRecording(sessionId, minutes) {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  await promisify(execFile)('psql', [
+    process.env.DATABASE_URL || 'postgresql://logicclass:logicclass@127.0.0.1:5432/logicclass',
+    '-c', `update "ClassSession" set "recordingStartedAt" = now() - interval '${minutes} minutes' where id = '${sessionId}'`,
+  ], { env: { ...process.env, PGPASSWORD: 'logicclass' } });
 }
 
 const teacher = await login('daniel@logicclass.plus', 'teach1234');
@@ -172,12 +185,53 @@ ok('the recording url is stored on the session',
   after.recordingUrl === `https://storage.example.com/recordings/${session.id}/final.mp4`,
   String(after.recordingUrl));
 
+// A finished egress that still looks live would be sent a StopEgress every
+// minute by the overrun sweep, for an egress that no longer exists.
+const stillMarked = await call('/recordings/sweep', { method: 'POST', token: owner.token, body: {} });
+ok('a finished recording is no longer marked as running',
+  stillMarked.json.stopped.length === 0, JSON.stringify(stillMarked.json));
+
 console.log('\n5. Storage accounting');
 const usage = (await call('/recordings/usage', { token: owner.token })).json;
 ok('the owner sees what has been stored', usage.recordings >= 1 && usage.totalBytes >= 2_150_000_000,
   JSON.stringify({ recordings: usage.recordings, gb: (usage.totalBytes / 1e9).toFixed(2) }));
 ok('hours recorded are tracked', usage.totalHours >= 3, String(usage.totalHours));
 ok('an annual projection is offered', usage.projectedAnnualBytes >= usage.last30DaysBytes);
+
+console.log('\n6. A recording nobody stops');
+const cap = (await call('/recordings/estimate?minutes=180', { token: teacher.token })).json;
+ok('the ceiling is reported with the estimate', cap.maxMinutes >= 15, String(cap.maxMinutes));
+ok('a class inside the ceiling is not flagged', cap.exceedsCap === (180 > cap.maxMinutes),
+  JSON.stringify({ minutes: 180, max: cap.maxMinutes, flagged: cap.exceedsCap }));
+const over = (await call(`/recordings/estimate?minutes=${cap.maxMinutes + 60}`, { token: teacher.token })).json;
+ok('a class longer than the ceiling is flagged before it starts', over.exceedsCap === true);
+
+// Start one, then age it past the cap and run the sweep the server runs on a
+// timer. Waiting three hours is not a test.
+const second = sessions.find((s) => s.id !== session.id) ?? session;
+await call(`/recordings/${second.id}/start`, { method: 'POST', token: teacher.token, body: {} });
+const before = stopped.length;
+const swept = await call('/recordings/sweep', { method: 'POST', token: owner.token, body: {} });
+ok('a recording still inside the limit is left alone',
+  swept.json.stopped.length === 0 && stopped.length === before, JSON.stringify(swept.json));
+
+await ageRecording(second.id, cap.maxMinutes + 1);
+const sweptNow = await call('/recordings/sweep', { method: 'POST', token: owner.token, body: {} });
+ok('one that has run past the limit is stopped',
+  sweptNow.json.stopped.includes(second.id), JSON.stringify(sweptNow.json));
+ok('and the media server was actually told to stop it', stopped.length === before + 1,
+  `StopEgress calls: ${stopped.length - before}`);
+
+const teacherTold = (await call('/notifications', { token: teacher.token })).json.notifications;
+ok('the teacher is told why it stopped',
+  teacherTold.some((n) => /stopped at the limit/i.test(n.title)),
+  JSON.stringify(teacherTold.slice(0, 2).map((n) => n.title)));
+
+const sweptAgain = await call('/recordings/sweep', { method: 'POST', token: owner.token, body: {} });
+ok('a stopped recording is not stopped twice', sweptAgain.json.stopped.length === 0);
+
+const capAsTeacher = await call('/recordings/sweep', { method: 'POST', token: teacher.token, body: {} });
+ok('only the owner can force a sweep', capAsTeacher.status === 403, String(capAsTeacher.status));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 livekit.close();

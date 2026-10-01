@@ -47,6 +47,10 @@ const schema = z.object({
 
   RECORDING_PROVIDER: z.enum(['none', 'livekit']).default('none'),
   RECORDING_PRESET: z.enum(['audio', '360p', '480p', '720p', '1080p']).default('720p'),
+  /* The longest a single recording may run. Egress bills for as long as it is
+     up, so a class nobody stopped is an open tap; three hours covers the
+     longest lesson the booking form offers twice over. */
+  RECORDING_MAX_MINUTES: z.coerce.number().int().min(15).max(480).default(180),
   LIVEKIT_URL: z.string().optional(),
   LIVEKIT_API_KEY: z.string().optional(),
   LIVEKIT_API_SECRET: z.string().optional(),
