@@ -34,7 +34,7 @@ interface NavItem { href: string; label: string; icon: string; roles: Role[]; gr
 
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: 'home', roles: ['owner', 'teacher', 'student'] },
-  { href: '/people', label: 'People', icon: 'people', roles: ['owner'], group: 'Manage' },
+  { href: '/admin', label: 'Admin', icon: 'people', roles: ['owner'], group: 'Manage' },
   { href: '/classes', label: 'Classes', icon: 'video', roles: ['owner', 'teacher', 'student'], group: 'Teaching' },
   { href: '/library', label: 'Library', icon: 'folder', roles: ['owner', 'teacher', 'student'] },
   { href: '/announcements', label: 'Announcements', icon: 'mega', roles: ['owner', 'teacher', 'student'] },
@@ -64,7 +64,7 @@ export function Shell({ title, subtitle, children, bare }: {
   const user = store.user;
   const items = NAV.filter((n) => n.roles.includes(user.role));
   const counts: Record<string, number> = {
-    '/people': store.users.filter((u) => u.status === 'pending').length,
+    '/admin': store.users.filter((u) => u.status === 'pending').length,
     '/classes': user.role === 'teacher' ? store.requests.filter((r) => r.status === 'pending').length : 0,
     '/billing': user.role === 'student' ? store.invoices.filter((i) => i.status === 'open').length : 0,
   };

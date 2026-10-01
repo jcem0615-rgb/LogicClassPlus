@@ -88,7 +88,7 @@ function OwnerHome() {
       <div className="grid gap-[18px] lg:grid-cols-[2fr_1fr]">
         <Card>
           <CardHead title="Registrations awaiting approval">
-            <Link href="/people"><Button size="sm">All users</Button></Link>
+            <Link href="/admin"><Button size="sm">Admin portal</Button></Link>
           </CardHead>
           {pendingUsers.length ? pendingUsers.map((p) => (
             <PendingUser key={p.id} person={p} />

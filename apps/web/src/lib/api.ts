@@ -146,6 +146,11 @@ export const api = {
   setUserStatus: (id: string, status: 'active' | 'suspended') =>
     patch<{ user: User }>(`/users/${id}/status`, { status }),
   deleteUser: (id: string) => del<{ ok: true }>(`/users/${id}`),
+  /** Owner-only edits to someone else's record. Role and status have their own routes. */
+  updateUser: (id: string, input: {
+    name?: string; subjects?: Subject[]; hourlyRate?: number;
+    gradeLevel?: string | null; timezone?: string;
+  }) => patch<{ user: User }>(`/users/${id}`, input),
   saveProfile: (input: {
     name?: string; locale?: string; timezone?: string; bio?: string; hourlyRate?: number;
   }) => patch<{ user: User }>('/users/me', input),

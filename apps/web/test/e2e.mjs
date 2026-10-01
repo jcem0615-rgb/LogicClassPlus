@@ -61,7 +61,7 @@ ok('student dashboard differs from the teacher one',
 console.log('\n2. Role-gated navigation');
 const nav = await teacher.$$eval('nav a', (as) => as.map((a) => a.getAttribute('href')));
 ok('a teacher sees payroll and attendance', nav.includes('/payroll') && nav.includes('/attendance'));
-ok('a teacher does not see billing or people', !nav.includes('/billing') && !nav.includes('/people'));
+ok('a teacher does not see billing or the admin portal', !nav.includes('/billing') && !nav.includes('/admin'));
 const studentNav = await student.$$eval('nav a', (as) => as.map((a) => a.getAttribute('href')));
 ok('a student sees billing but not payroll',
   studentNav.includes('/billing') && !studentNav.includes('/payroll'));
@@ -75,7 +75,7 @@ for (const [path, marker] of [['/classes', 'Upcoming'], ['/library', 'Folders'],
 
 const owner = await open('owner');
 await signIn(owner, 'owner@logicclass.plus', 'admin1234');
-await owner.goto(`${WEB}/people`, { waitUntil: 'networkidle' });
+await owner.goto(`${WEB}/admin`, { waitUntil: 'networkidle' });
 await owner.waitForTimeout(800);
 ok('owner sees every account', (await owner.textContent('main')).includes('All accounts'));
 
@@ -326,6 +326,48 @@ ok('the library filters folders by subject',
 ok('and the filtered list only shows that subject',
   !/english/i.test(mathText), mathText.slice(0, 80));
 await t2.close();
+
+console.log('\n9. Admin portal');
+const admin = await open('admin');
+await signIn(admin, 'owner@logicclass.plus', 'admin1234');
+await admin.goto(`${WEB}/admin`, { waitUntil: 'networkidle' });
+await admin.waitForTimeout(2000);
+
+const adminText = (await admin.textContent('main')).replace(/\s+/g, ' ');
+ok('the portal gathers the owner-only work',
+  /Awaiting approval/.test(adminText) && /All accounts/.test(adminText)
+  && /Password reset requests/.test(adminText), adminText.slice(0, 160));
+
+// The pay rate is the thing payroll multiplies by, so it has to be editable
+// and it has to persist — not just redraw optimistically.
+const rateBefore = await admin.textContent('[data-rate="daniel@logicclass.plus"]');
+await admin.click('[data-edit="daniel@logicclass.plus"]');
+await admin.waitForSelector('#rate-input');
+await admin.fill('#rate-input', '41.5');
+await admin.click('[data-save-account]');
+await admin.waitForTimeout(2500);
+const rateAfter = await admin.textContent('[data-rate="daniel@logicclass.plus"]');
+ok('the owner can change a teacher pay rate', /41\.5/.test(rateAfter), `${rateBefore} -> ${rateAfter}`);
+
+await admin.reload({ waitUntil: 'networkidle' });
+await admin.waitForTimeout(2500);
+ok('and the new rate survives a reload',
+  /41\.5/.test(await admin.textContent('[data-rate="daniel@logicclass.plus"]')));
+
+// Only the owner. A teacher calling the endpoint directly must be refused.
+const refused = await teacher.evaluate(async (api) => {
+  const res = await fetch(`${api}/api/users/00000000/`.replace(/\/$/, ''), {
+    method: 'PATCH',
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${localStorage.getItem('logicclass.token')}`,
+    },
+    body: JSON.stringify({ hourlyRate: 999 }),
+  });
+  return res.status;
+}, API);
+ok('a teacher cannot edit accounts through the API', refused === 403, `status ${refused}`);
+await admin.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');

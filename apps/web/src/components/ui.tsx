@@ -131,8 +131,9 @@ export const Th = ({ className = '', children }: { className?: string; children?
   </th>
 );
 
-export const Td = ({ className = '', children }: { className?: string; children?: ReactNode }) => (
-  <td className={`border-b border-line px-3.5 py-2.5 align-middle ${className}`}>{children}</td>
+// Forwards the rest: it is a <td>, so colSpan, data-* and the like belong on it.
+export const Td = ({ className = '', children, ...props }: React.TdHTMLAttributes<HTMLTableCellElement>) => (
+  <td {...props} className={`border-b border-line px-3.5 py-2.5 align-middle ${className}`}>{children}</td>
 );
 
 export const Flag = ({ tone = 'warn', title, children }: {

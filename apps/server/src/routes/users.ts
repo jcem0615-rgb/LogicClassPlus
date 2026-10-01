@@ -116,6 +116,53 @@ usersRouter.patch('/me', validate(profile), asyncRoute(async (req, res) => {
   res.json({ user: publicUser(updated) });
 }));
 
+/* The literal routes above must stay above this one: Express matches in order,
+   and `/:id` would otherwise swallow PATCH /users/me. */
+/* ---------------- admin edits to another account ---------------- */
+
+const adminEdit = z.object({
+  name: z.string().trim().min(2).max(120).optional(),
+  subjects: z.array(z.enum(['math', 'english'])).max(2).optional(),
+  /** Teacher pay, in whole currency units. Payroll multiplies this by minutes taught. */
+  hourlyRate: z.number().min(0).max(1000).optional(),
+  gradeLevel: z.string().trim().max(40).nullable().optional(),
+  timezone: z.string().max(64).optional(),
+});
+
+/**
+ * The Owner editing someone else's record.
+ *
+ * Deliberately narrow: no role changes, no status changes and no password.
+ * Status has its own route with its own guard rails, and a role change would
+ * silently re-point every row that hangs off it — a teacher's sessions and
+ * payroll lines do not survive becoming a student.
+ */
+usersRouter.patch('/:id', requireRole('OWNER'), validate(idParam, 'params'),
+  validate(adminEdit), asyncRoute(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const input = req.body as z.infer<typeof adminEdit>;
+    const target = await prisma.user.findUnique({ where: { id } });
+    if (!target) throw notFound('No such account.');
+
+    if (input.hourlyRate != null && target.role !== 'TEACHER') {
+      throw badRequest('Only a teacher has a pay rate.');
+    }
+
+    const updated = await prisma.user.update({
+      where: { id },
+      data: {
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.subjects
+          ? { subjects: input.subjects.map((x) => x.toUpperCase() as 'MATH' | 'ENGLISH') }
+          : {}),
+        ...(input.hourlyRate != null ? { hourlyRateCents: toCents(input.hourlyRate) } : {}),
+        ...(input.gradeLevel !== undefined ? { gradeLevel: input.gradeLevel } : {}),
+        ...(input.timezone ? { timezone: input.timezone } : {}),
+      },
+    });
+    res.json({ user: publicUser(updated) });
+  }));
+
 /* ---------------- password reset queue ---------------- */
 usersRouter.get('/reset-requests', requireRole('OWNER'), asyncRoute(async (_req, res) => {
   const rows = await prisma.passwordResetRequest.findMany({ orderBy: { requestedAt: 'desc' }, take: 50 });
