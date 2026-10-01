@@ -34,11 +34,18 @@ const registration = z.object({
   email: z.string().trim().toLowerCase().email('Enter a valid email address.'),
   password: z.string().min(8, 'Use at least 8 characters for your password.'),
   role: z.enum(['teacher', 'student', 'parent']),
-  subjects: z.array(z.enum(['math', 'english'])).min(1).default(['math']),
+  /* A parent teaches nothing and studies nothing, so they pick no subject —
+     hence the empty array is allowed rather than defaulted to maths. */
+  subjects: z.array(z.enum(['math', 'english'])).default(['math']),
   locale: z.string().max(12).optional(),
   timezone: z.string().max(64).optional(),
   gradeLevel: z.string().max(64).optional(),
 });
+
+/* Spelled out rather than a ternary: the old `=== 'teacher' ? TEACHER :
+   STUDENT` silently made every parent a student when the parent role was
+   added to the enum above. A map has to be edited when the enum grows. */
+const ROLES = { teacher: 'TEACHER', student: 'STUDENT', parent: 'PARENT' } as const;
 
 authRouter.post('/register', attemptLimit, validate(registration), asyncRoute(async (req, res) => {
   const input = req.body as z.infer<typeof registration>;
@@ -50,11 +57,13 @@ authRouter.post('/register', attemptLimit, validate(registration), asyncRoute(as
       email: input.email,
       name: input.name,
       passwordHash: await hashPassword(input.password),
-      role: input.role === 'teacher' ? 'TEACHER' : 'STUDENT',
+      role: ROLES[input.role],
       status: 'PENDING', // held until the Owner approves
       locale: input.locale ?? 'en-US',
       timezone: input.timezone ?? 'UTC',
-      subjects: input.subjects.map((s) => (s === 'math' ? 'MATH' : 'ENGLISH')),
+      subjects: input.role === 'parent'
+        ? []
+        : input.subjects.map((s) => (s === 'math' ? 'MATH' : 'ENGLISH')),
       hourlyRateCents: input.role === 'teacher' ? 2200 : null,
       gradeLevel: input.role === 'student' ? input.gradeLevel ?? null : null,
     },

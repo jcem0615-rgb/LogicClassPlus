@@ -134,7 +134,7 @@ export const api = {
     post<{ token: string; user: User }>('/auth/login', { email, password }),
   register: (input: {
     name: string; email: string; password: string;
-    role: 'teacher' | 'student'; subjects: Subject[]; timezone?: string;
+    role: 'teacher' | 'student' | 'parent'; subjects: Subject[]; timezone?: string;
   }) => post<{ user: User; pending: boolean }>('/auth/register', input),
   logout: () => post<{ ok: true }>('/auth/logout'),
   me: () => get<{ user: User }>('/auth/me'),

@@ -13,6 +13,7 @@ const DEMO = [
   ['Teacher (Math)', 'daniel@logicclass.plus', 'teach1234'],
   ['Teacher (English)', 'hana@logicclass.plus', 'teach1234'],
   ['Student', 'amira@logicclass.plus', 'learn1234'],
+  ['Parent', 'nadia@logicclass.plus', 'parent1234'],
 ] as const;
 
 export default function AuthPage() {
@@ -25,6 +26,9 @@ export default function AuthPage() {
   const [pending, setPending] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  /* A parent picks no subject, so the field next to the role goes away
+     rather than sitting there asking a question that has no answer. */
+  const [signUpAs, setSignUpAs] = useState<'student' | 'teacher' | 'parent'>('student');
 
   useEffect(() => {
     if (store.ready && store.user) router.replace('/dashboard');
@@ -56,8 +60,8 @@ export default function AuthPage() {
         name: String(form.get('name')),
         email: String(form.get('email')),
         password: String(form.get('password')),
-        role: form.get('role') as 'teacher' | 'student',
-        subjects: [form.get('subject') as Subject],
+        role: signUpAs,
+        subjects: signUpAs === 'parent' ? [] : [form.get('subject') as Subject],
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       });
       setMode('login');
@@ -78,7 +82,7 @@ export default function AuthPage() {
           <div className="flex gap-0.5 rounded-sm bg-sunk p-[3px]">
             {(['login', 'register'] as const).map((m) => (
               <button
-                key={m} onClick={() => { setMode(m); setError(''); }}
+                key={m} data-mode={m} onClick={() => { setMode(m); setError(''); }}
                 className={`flex-1 rounded-[5px] py-1.5 text-[13.5px] font-medium ${
                   mode === m ? 'bg-card text-ink shadow-1' : 'text-ink-2'}`}
               >
@@ -129,17 +133,21 @@ export default function AuthPage() {
               </Field>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label="I am a">
-                  <select name="role" defaultValue="student">
+                  <select name="role" value={signUpAs}
+                    onChange={(e) => setSignUpAs(e.target.value as typeof signUpAs)}>
                     <option value="student">Student</option>
                     <option value="teacher">Teacher</option>
+                    <option value="parent">Parent or guardian</option>
                   </select>
                 </Field>
-                <Field label="Subject">
-                  <select name="subject" defaultValue="math">
-                    <option value="math">Math</option>
-                    <option value="english">English</option>
-                  </select>
-                </Field>
+                {signUpAs === 'parent' ? null : (
+                  <Field label="Subject">
+                    <select name="subject" defaultValue="math">
+                      <option value="math">Math</option>
+                      <option value="english">English</option>
+                    </select>
+                  </Field>
+                )}
               </div>
               {error ? <Flag title="Cannot continue">{error}</Flag> : null}
               <Button type="submit" variant="primary" className="w-full" disabled={busy}>
@@ -147,6 +155,9 @@ export default function AuthPage() {
               </Button>
               <p className="text-[13px] text-ink-3">
                 New accounts are reviewed by the administrator before the first sign-in.
+                {signUpAs === 'parent'
+                  ? ' A parent is also linked to their children by the administrator.'
+                  : ''}
               </p>
             </form>
           )}

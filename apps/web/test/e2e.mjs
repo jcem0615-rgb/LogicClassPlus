@@ -433,7 +433,36 @@ await owner2.waitForTimeout(2500);
 ok('and unlink them again',
   (await owner2.textContent('[data-child="kenji@logicclass.plus"]')).includes('Link')
   && !(await owner2.textContent('[data-child="kenji@logicclass.plus"]')).includes('Linked'));
-await owner2.close();
+// Registering as a parent has to actually produce a parent. The role was
+// mapped with a `=== 'teacher' ? TEACHER : STUDENT` ternary, so every parent
+// who signed up became a student — invisible until they saw someone's
+// timetable. Signing up through the form is the only way to catch that.
+const signup = await open('signup');
+const addr = `guardian-${Date.now()}@example.test`;
+await signup.click('[data-mode="register"]');
+await signup.waitForSelector('input[name="name"]');
+await signup.fill('input[name="name"]', 'Priya Raman');
+await signup.fill('input[name="email"]', addr);
+await signup.fill('input[name="password"]', 'guardian1234');
+await signup.selectOption('select[name="role"]', 'parent');
+ok('the subject field goes away for a parent',
+  await signup.locator('select[name="subject"]').count() === 0);
+await signup.click('button[type="submit"]');
+await signup.waitForTimeout(2500);
+await signup.close();
+
+const owner3 = await open('owner3');
+await signIn(owner3, 'owner@logicclass.plus', 'admin1234');
+const created = await owner3.evaluate(async ([api, email]) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/users`, { headers: { authorization: `Bearer ${token}` } });
+  const { users } = await r.json();
+  return users.find((u) => u.email === email) ?? null;
+}, [API, addr]);
+ok('a parent who signs up is a parent, awaiting approval',
+  created?.role === 'parent' && created?.status === 'pending',
+  JSON.stringify(created && { role: created.role, status: created.status }));
+await owner3.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');
