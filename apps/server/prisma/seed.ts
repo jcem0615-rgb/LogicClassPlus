@@ -62,6 +62,9 @@ async function main(): Promise<void> {
     { email: 'tomas@logicclass.plus', name: 'Tomás Rivas', passwordHash: await hashPassword('learn1234'),
       role: 'STUDENT', status: 'PENDING', locale: 'es-CL', timezone: 'America/Santiago',
       subjects: ['MATH'], gradeLevel: 'Year 8' },
+    { email: 'nadia@logicclass.plus', name: 'Nadia Haddad', passwordHash: await hashPassword('parent1234'),
+      role: 'PARENT', status: 'ACTIVE', locale: 'ar-AE', timezone: 'Asia/Dubai',
+      subjects: [] },
   ];
 
   const byEmail = new Map<string, User>();
@@ -82,6 +85,14 @@ async function main(): Promise<void> {
   const amira = u('amira@logicclass.plus');
   const kenji = u('kenji@logicclass.plus');
   const lucia = u('lucia@logicclass.plus');
+  const nadia = u('nadia@logicclass.plus');
+
+  // One guardian link, so the parent portal has something real behind it.
+  await prisma.guardian.upsert({
+    where: { parentId_studentId: { parentId: nadia.id, studentId: amira.id } },
+    create: { parentId: nadia.id, studentId: amira.id },
+    update: {},
+  });
 
   if (await prisma.folder.count() === 0) {
     const folders = await Promise.all([

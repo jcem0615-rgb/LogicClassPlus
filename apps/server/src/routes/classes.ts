@@ -4,6 +4,7 @@ import type { Prisma } from '@prisma/client';
 import { prisma } from '../prisma.js';
 import { asyncRoute, validate } from '../lib/validate.js';
 import { badRequest, forbidden, notFound } from '../lib/http-error.js';
+import { canSeeStudent, visibleStudentIds } from '../lib/scope.js';
 import { publicMessage, publicRequest, publicSession } from '../lib/serialize.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
 import { notify } from '../services/notifications.js';
@@ -14,11 +15,22 @@ classesRouter.use(requireAuth);
 
 const subject = z.enum(['math', 'english']);
 
+/**
+ * A parent sees exactly what their children see, and nothing else. Without
+ * this they fell into the student branch and queried `studentId: <parentId>`,
+ * which returns nothing — wrong rather than leaky, but wrong.
+ */
+async function studentFilter(me: { id: string; role: string }) {
+  if (me.role === 'OWNER') return {};
+  if (me.role === 'TEACHER') return { teacherId: me.id };
+  const ids = await visibleStudentIds(me as Parameters<typeof visibleStudentIds>[0]);
+  return { studentId: { in: ids ?? [] } };
+}
+
 /* ---------------- class requests ---------------- */
 classesRouter.get('/requests', asyncRoute(async (req, res) => {
   const me = actor(req);
-  const where: Prisma.ClassRequestWhereInput =
-    me.role === 'OWNER' ? {} : me.role === 'TEACHER' ? { teacherId: me.id } : { studentId: me.id };
+  const where: Prisma.ClassRequestWhereInput = await studentFilter(me);
   const rows = await prisma.classRequest.findMany({ where, orderBy: { createdAt: 'desc' }, take: 100 });
   res.json({ requests: rows.map(publicRequest) });
 }));
@@ -111,8 +123,7 @@ classesRouter.patch('/requests/:id', requireRole('TEACHER'),
 /* ---------------- sessions ---------------- */
 classesRouter.get('/sessions', asyncRoute(async (req, res) => {
   const me = actor(req);
-  const where: Prisma.ClassSessionWhereInput =
-    me.role === 'OWNER' ? {} : me.role === 'TEACHER' ? { teacherId: me.id } : { studentId: me.id };
+  const where: Prisma.ClassSessionWhereInput = await studentFilter(me);
   const rows = await prisma.classSession.findMany({ where, orderBy: { startsAt: 'asc' }, take: 200 });
   res.json({ sessions: rows.map(publicSession) });
 }));
@@ -121,7 +132,13 @@ async function sessionForActor(req: Parameters<typeof actor>[0], id: string) {
   const me = actor(req);
   const session = await prisma.classSession.findUnique({ where: { id } });
   if (!session) throw notFound('That session no longer exists.');
-  if (me.role !== 'OWNER' && session.teacherId !== me.id && session.studentId !== me.id) {
+  const mine = me.role === 'OWNER'
+    || session.teacherId === me.id
+    || session.studentId === me.id
+    // A parent may read their child's session, but never join it: the room
+    // itself is gated separately, on teacher or student only.
+    || (me.role === 'PARENT' && await canSeeStudent(me, session.studentId));
+  if (!mine) {
     throw forbidden('Only the teacher and student in this session can open it.');
   }
   return session;

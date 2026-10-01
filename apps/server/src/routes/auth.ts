@@ -33,7 +33,7 @@ const registration = z.object({
   name: z.string().trim().min(2, 'Enter your full name.'),
   email: z.string().trim().toLowerCase().email('Enter a valid email address.'),
   password: z.string().min(8, 'Use at least 8 characters for your password.'),
-  role: z.enum(['teacher', 'student']),
+  role: z.enum(['teacher', 'student', 'parent']),
   subjects: z.array(z.enum(['math', 'english'])).min(1).default(['math']),
   locale: z.string().max(12).optional(),
   timezone: z.string().max(64).optional(),

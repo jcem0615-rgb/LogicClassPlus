@@ -16,6 +16,7 @@ enum Role {
   OWNER
   TEACHER
   STUDENT
+  PARENT
 }
 
 enum UserStatus {
@@ -86,8 +87,8 @@ model User {
   locale          String     @default("en-US") // reserved for i18n; no framework wired yet
   timezone        String     @default("UTC")
   subjects        Subject[]  @default([])
-  hourlyRateCents Int?       // teachers only
-  gradeLevel      String?    // students only
+  hourlyRateCents Int? // teachers only
+  gradeLevel      String? // students only
   bio             String?
   seeded          Boolean    @default(false)
   createdAt       DateTime   @default(now())
@@ -96,13 +97,13 @@ model User {
   folders           Folder[]
   resources         Resource[]
   announcements     Announcement[]
-  requestsAsStudent ClassRequest[]        @relation("StudentRequests")
-  requestsAsTeacher ClassRequest[]        @relation("TeacherRequests")
-  sessionsAsStudent ClassSession[]        @relation("StudentSessions")
-  sessionsAsTeacher ClassSession[]        @relation("TeacherSessions")
+  requestsAsStudent ClassRequest[]         @relation("StudentRequests")
+  requestsAsTeacher ClassRequest[]         @relation("TeacherRequests")
+  sessionsAsStudent ClassSession[]         @relation("StudentSessions")
+  sessionsAsTeacher ClassSession[]         @relation("TeacherSessions")
   attendance        Attendance[]
   payrollLines      PayrollLine[]
-  approvedBatches   PayrollBatch[]        @relation("BatchApprover")
+  approvedBatches   PayrollBatch[]         @relation("BatchApprover")
   invoices          Invoice[]
   notifications     Notification[]
   pushSubscriptions PushSubscription[]
@@ -110,6 +111,8 @@ model User {
   resolvedResets    PasswordResetRequest[] @relation("ResetResolver")
   chatMessages      ChatMessage[]
   attempts          PronunciationAttempt[] @relation("StudentAttempts")
+  children          Guardian[]             @relation("GuardianParent")
+  guardians         Guardian[]             @relation("GuardianStudent")
 
   @@index([role, status])
 }
@@ -126,6 +129,22 @@ model PushSubscription {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
+}
+
+/// Who may see a student's classes and invoices besides the student.
+/// Links are made by the Owner from the admin portal, never self-claimed:
+/// a child's timetable is not something to hand out on an email match.
+model Guardian {
+  id        String   @id @default(cuid())
+  parentId  String
+  studentId String
+  createdAt DateTime @default(now())
+
+  parent  User @relation("GuardianParent", fields: [parentId], references: [id], onDelete: Cascade)
+  student User @relation("GuardianStudent", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([parentId, studentId])
+  @@index([studentId])
 }
 
 model Folder {
@@ -199,29 +218,29 @@ model ClassRequest {
 }
 
 model ClassSession {
-  id           String        @id @default(cuid())
-  requestId    String?       @unique
-  teacherId    String
-  studentId    String
-  subject      Subject
-  topic        String
-  startsAt     DateTime
-  minutes      Int           @default(60)
-  status       SessionStatus @default(SCHEDULED)
-  joinedAt     DateTime?
-  endedAt      DateTime?
+  id                String        @id @default(cuid())
+  requestId         String?       @unique
+  teacherId         String
+  studentId         String
+  subject           Subject
+  topic             String
+  startsAt          DateTime
+  minutes           Int           @default(60)
+  status            SessionStatus @default(SCHEDULED)
+  joinedAt          DateTime?
+  endedAt           DateTime?
   // Recording is produced by the media server, not the browsers. P2P WebRTC
   // gives the server no stream, so these stay null until an SFU fills them.
-  recordingUrl     String?
+  recordingUrl      String?
   recordingEgressId String?
-  recordingBytes   BigInt?
-  recordingSeconds Int?
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
+  recordingBytes    BigInt?
+  recordingSeconds  Int?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
 
-  request    ClassRequest?     @relation(fields: [requestId], references: [id], onDelete: SetNull)
-  teacher    User              @relation("TeacherSessions", fields: [teacherId], references: [id], onDelete: Cascade)
-  student    User              @relation("StudentSessions", fields: [studentId], references: [id], onDelete: Cascade)
+  request    ClassRequest?          @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  teacher    User                   @relation("TeacherSessions", fields: [teacherId], references: [id], onDelete: Cascade)
+  student    User                   @relation("StudentSessions", fields: [studentId], references: [id], onDelete: Cascade)
   attendance Attendance?
   documents  SessionDocument[]
   messages   ChatMessage[]
@@ -342,22 +361,22 @@ model InvoiceLine {
 /// provider. Kept so a student can see progress and a teacher can compare
 /// today's attempt with last week's.
 model PronunciationAttempt {
-  id                String   @id @default(cuid())
-  studentId         String
-  sessionId         String?
-  referenceText     String
-  language          String   @default("en-US")
-  recognizedText    String?
-  accuracyScore     Float?
-  fluencyScore      Float?
-  completenessScore Float?
+  id                 String   @id @default(cuid())
+  studentId          String
+  sessionId          String?
+  referenceText      String
+  language           String   @default("en-US")
+  recognizedText     String?
+  accuracyScore      Float?
+  fluencyScore       Float?
+  completenessScore  Float?
   pronunciationScore Float?
-  prosodyScore      Float?
-  durationSeconds   Float?
+  prosodyScore       Float?
+  durationSeconds    Float?
   /// Per-word and per-phoneme detail, exactly as mapped from the provider.
-  words             Json?
-  provider          String   @default("azure")
-  createdAt         DateTime @default(now())
+  words              Json?
+  provider           String   @default("azure")
+  createdAt          DateTime @default(now())
 
   student User          @relation("StudentAttempts", fields: [studentId], references: [id], onDelete: Cascade)
   session ClassSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)

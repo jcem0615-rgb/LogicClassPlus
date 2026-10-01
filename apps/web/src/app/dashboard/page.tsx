@@ -18,6 +18,7 @@ export default function DashboardPage() {
       {user?.role === 'owner' ? <OwnerHome /> : null}
       {user?.role === 'teacher' ? <TeacherHome /> : null}
       {user?.role === 'student' ? <StudentHome /> : null}
+      {user?.role === 'parent' ? <ParentHome /> : null}
     </Shell>
   );
 }
@@ -269,5 +270,83 @@ function StudentHome() {
         <Announcements limit={3} />
       </div>
     </>
+  );
+}
+
+/**
+ * What a parent is here for: is my child's next class soon, are they
+ * actually turning up, and do I owe anything.
+ *
+ * Deliberately read-only. A parent can see a class and an invoice; booking
+ * and joining the room stay with the student and the teacher.
+ */
+function ParentHome() {
+  const store = useStore();
+  const children = store.children;
+
+  if (!children.length) {
+    return (
+      <Empty
+        title="No students linked yet"
+        body="The administrator attaches your children to this account. Once that is done their classes and invoices appear here."
+      />
+    );
+  }
+
+  const next = nextSession(store.sessions);
+  const done = store.sessions.filter((s) => s.status === 'completed');
+  const open = store.invoices.filter((i) => i.status === 'open');
+  const due = open.reduce((sum, i) => sum + i.amount, 0);
+
+  return (
+    <>
+      <Summary items={[
+        { k: 'Children', v: children.length, s: children.map((c) => c.name.split(' ')[0]).join(', ') },
+        { k: 'Next class', v: next ? time(next.startsAt) : '—',
+          s: next ? `${day(next.startsAt)} · ${store.userById(next.studentId).name}` : 'none booked' },
+        { k: 'Classes finished', v: done.length,
+          s: `${(done.reduce((sum, s) => sum + s.minutes, 0) / 60).toFixed(1)}h taught` },
+        { k: 'Balance due', v: money(due), s: open.length ? `${open.length} open` : 'nothing owing' },
+      ]} />
+
+      {children.map((child) => {
+        const theirs = store.sessions.filter((s) => s.studentId === child.id);
+        const upcoming = theirs
+          .filter((s) => s.status === 'scheduled' || s.status === 'live')
+          .slice(0, 4);
+        const finished = theirs.filter((s) => s.status === 'completed');
+        const missed = theirs.filter((s) => s.status === 'no_show');
+
+        return (
+          <Card key={child.id}>
+            <CardHead title={child.name}>
+              <Pill>{child.gradeLevel ?? 'student'}</Pill>
+            </CardHead>
+            <div className="grid gap-3 px-[18px] py-3.5 sm:grid-cols-3">
+              <Stat k="Attended" v={String(finished.length)} />
+              <Stat k="Missed" v={String(missed.length)}
+                tone={missed.length ? 'crit' : undefined} />
+              <Stat k="Upcoming" v={String(upcoming.length)} />
+            </div>
+            {upcoming.length ? upcoming.map((s) => (
+              <TimelineItem key={s.id} session={s} as="owner" />
+            )) : (
+              <div className="border-t border-line px-[18px] py-3.5 text-[13px] text-ink-3">
+                Nothing booked for {child.name.split(' ')[0]} right now.
+              </div>
+            )}
+          </Card>
+        );
+      })}
+    </>
+  );
+}
+
+function Stat({ k, v, tone }: { k: string; v: string; tone?: 'crit' }) {
+  return (
+    <div>
+      <div className="eyebrow">{k}</div>
+      <div className={`text-[22px] font-semibold ${tone === 'crit' ? 'text-crit' : ''}`}>{v}</div>
+    </div>
   );
 }

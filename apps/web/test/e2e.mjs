@@ -369,6 +369,72 @@ const refused = await teacher.evaluate(async (api) => {
 ok('a teacher cannot edit accounts through the API', refused === 403, `status ${refused}`);
 await admin.close();
 
+console.log('\n10. Parents');
+const parent = await open('parent');
+await signIn(parent, 'nadia@logicclass.plus', 'parent1234');
+await parent.waitForTimeout(2500);
+const parentMain = (await parent.textContent('main')).replace(/\s+/g, ' ');
+ok('a parent sees their child by name',
+  /Amira/.test(parentMain) && /Children/.test(parentMain), parentMain.slice(0, 180));
+ok('and the figures that matter to them',
+  /Next class/.test(parentMain) && /Balance due/.test(parentMain));
+
+const parentNav = await parent.$$eval('nav a', (as) => as.map((a) => a.getAttribute('href')));
+ok('a parent gets billing but not payroll, attendance or admin',
+  parentNav.includes('/billing') && !parentNav.includes('/payroll')
+  && !parentNav.includes('/attendance') && !parentNav.includes('/admin'),
+  parentNav.join(','));
+
+// The point of the whole feature: one family cannot see another's.
+const leak = await parent.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/classes/sessions`, { headers: { authorization: `Bearer ${token}` } });
+  const { sessions } = await r.json();
+  return [...new Set(sessions.map((s) => s.studentId))];
+}, API);
+const amiraId = await parent.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/users/children`, { headers: { authorization: `Bearer ${token}` } });
+  const { children } = await r.json();
+  return children.map((c) => c.id);
+}, API);
+ok('a parent only ever sees their own children\'s sessions',
+  leak.length > 0 && leak.every((id) => amiraId.includes(id)),
+  `sessions for ${leak.length} student(s), linked to ${amiraId.length}`);
+
+// Linking is the Owner's job, not something a parent can grant themselves.
+const selfLink = await parent.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/users/x/children`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ studentId: 'y' }),
+  });
+  return r.status;
+}, API);
+ok('a parent cannot link a child to themselves', selfLink === 403, `status ${selfLink}`);
+await parent.close();
+
+// The Owner assigns from the admin portal.
+const owner2 = await open('owner2');
+await signIn(owner2, 'owner@logicclass.plus', 'admin1234');
+await owner2.goto(`${WEB}/admin`, { waitUntil: 'networkidle' });
+await owner2.waitForTimeout(2000);
+ok('the admin portal lists parents and what they are linked to',
+  /Parents and their students/.test((await owner2.textContent('main')).replace(/\s+/g, ' ')));
+await owner2.click('[data-link="nadia@logicclass.plus"]');
+await owner2.waitForSelector('[data-child="kenji@logicclass.plus"]');
+await owner2.click('[data-child="kenji@logicclass.plus"]');
+await owner2.waitForTimeout(2500);
+ok('the owner can link another student',
+  (await owner2.textContent('[data-child="kenji@logicclass.plus"]')).includes('Linked'));
+await owner2.click('[data-child="kenji@logicclass.plus"]');
+await owner2.waitForTimeout(2500);
+ok('and unlink them again',
+  (await owner2.textContent('[data-child="kenji@logicclass.plus"]')).includes('Link')
+  && !(await owner2.textContent('[data-child="kenji@logicclass.plus"]')).includes('Linked'));
+await owner2.close();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');
 await browser.close();

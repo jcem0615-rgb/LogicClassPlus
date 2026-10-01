@@ -154,6 +154,13 @@ export const api = {
   saveProfile: (input: {
     name?: string; locale?: string; timezone?: string; bio?: string; hourlyRate?: number;
   }) => patch<{ user: User }>('/users/me', input),
+  children: () => get<{ children: User[] }>('/users/children'),
+  childrenOfParent: (parentId: string) =>
+    get<{ children: User[] }>(`/users/${parentId}/children`),
+  linkChild: (parentId: string, studentId: string) =>
+    post<{ children: User[] }>(`/users/${parentId}/children`, { studentId }),
+  unlinkChild: (parentId: string, studentId: string) =>
+    del<{ children: User[] }>(`/users/${parentId}/children/${studentId}`),
   resetRequests: () => get<{ resets: ResetRequest[] }>('/users/reset-requests'),
   resolveReset: (id: string, decision: 'approve' | 'reject') =>
     patch<{ reset: ResetRequest; resetLink?: string }>(`/users/reset-requests/${id}`, { decision }),

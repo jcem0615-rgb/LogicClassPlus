@@ -1,6 +1,6 @@
 /** The shapes the API returns. These mirror apps/server/src/lib/serialize.ts. */
 
-export type Role = 'owner' | 'teacher' | 'student';
+export type Role = 'owner' | 'teacher' | 'student' | 'parent';
 export type Subject = 'math' | 'english';
 export type UserStatus = 'active' | 'pending' | 'suspended';
 

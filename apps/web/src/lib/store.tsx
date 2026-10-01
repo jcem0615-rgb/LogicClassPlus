@@ -36,6 +36,8 @@ interface State {
   invoices: Invoice[];
   notifications: Notification[];
   resets: ResetRequest[];
+  /** For a parent: the students the Owner has linked to them. */
+  children: User[];
   policy: PayrollPolicy;
   toasts: Toast[];
 }
@@ -43,7 +45,7 @@ interface State {
 const emptyState: State = {
   ready: false, user: null, users: [], folders: [], resources: [], announcements: [],
   requests: [], sessions: [], attendance: [], payroll: [], invoices: [],
-  notifications: [], resets: [], policy: { graceMinutes: 5, latePenalty: 1.5 }, toasts: [],
+  notifications: [], resets: [], children: [], policy: { graceMinutes: 5, latePenalty: 1.5 }, toasts: [],
 };
 
 interface Store extends State {
@@ -90,14 +92,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const resourceLists = await Promise.all(
       folders.map((f) => api.resources(f.id).then((r) => r.resources).catch(() => [])));
 
-    const [users, attendanceResult, payroll, invoices, resets] = await Promise.all([
+    const [users, attendanceResult, payroll, invoices, resets, children] = await Promise.all([
       api.users().then((r) => r.users).catch(() => []),
-      user.role === 'student'
+      user.role === 'student' || user.role === 'parent'
         ? Promise.resolve({ attendance: [], policy: { graceMinutes: 5, latePenalty: 1.5 } })
         : api.attendance().catch(() => ({ attendance: [], policy: { graceMinutes: 5, latePenalty: 1.5 } })),
-      user.role === 'student' ? Promise.resolve([]) : api.payrollBatches().then((r) => r.batches).catch(() => []),
+      user.role === 'student' || user.role === 'parent' ? Promise.resolve([]) : api.payrollBatches().then((r) => r.batches).catch(() => []),
       user.role === 'teacher' ? Promise.resolve([]) : api.invoices().then((r) => r.invoices).catch(() => []),
       user.role === 'owner' ? api.resetRequests().then((r) => r.resets).catch(() => []) : Promise.resolve([]),
+      user.role === 'parent' ? api.children().then((r) => r.children).catch(() => []) : Promise.resolve([]),
     ]);
 
     setState((s) => ({
@@ -106,7 +109,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       announcements, requests, sessions,
       attendance: attendanceResult.attendance,
       policy: attendanceResult.policy,
-      payroll, invoices, resets, notifications,
+      payroll, invoices, resets, children, notifications,
     }));
   }, []);
 

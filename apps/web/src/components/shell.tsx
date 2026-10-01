@@ -33,15 +33,15 @@ const Icon = ({ name }: { name: string }) => (
 interface NavItem { href: string; label: string; icon: string; roles: Role[]; group?: string }
 
 const NAV: NavItem[] = [
-  { href: '/dashboard', label: 'Dashboard', icon: 'home', roles: ['owner', 'teacher', 'student'] },
+  { href: '/dashboard', label: 'Dashboard', icon: 'home', roles: ['owner', 'teacher', 'student', 'parent'] },
   { href: '/admin', label: 'Admin', icon: 'people', roles: ['owner'], group: 'Manage' },
-  { href: '/classes', label: 'Classes', icon: 'video', roles: ['owner', 'teacher', 'student'], group: 'Teaching' },
+  { href: '/classes', label: 'Classes', icon: 'video', roles: ['owner', 'teacher', 'student', 'parent'], group: 'Teaching' },
   { href: '/library', label: 'Library', icon: 'folder', roles: ['owner', 'teacher', 'student'] },
-  { href: '/announcements', label: 'Announcements', icon: 'mega', roles: ['owner', 'teacher', 'student'] },
+  { href: '/announcements', label: 'Announcements', icon: 'mega', roles: ['owner', 'teacher', 'student', 'parent'] },
   { href: '/attendance', label: 'Attendance', icon: 'clock', roles: ['owner', 'teacher'], group: 'Money' },
   { href: '/payroll', label: 'Payroll', icon: 'money', roles: ['owner', 'teacher'] },
-  { href: '/billing', label: 'Billing', icon: 'card', roles: ['owner', 'student'] },
-  { href: '/settings', label: 'Settings', icon: 'gear', roles: ['owner', 'teacher', 'student'], group: 'Account' },
+  { href: '/billing', label: 'Billing', icon: 'card', roles: ['owner', 'student', 'parent'] },
+  { href: '/settings', label: 'Settings', icon: 'gear', roles: ['owner', 'teacher', 'student', 'parent'], group: 'Account' },
 ];
 
 export function Shell({ title, subtitle, children, bare }: {

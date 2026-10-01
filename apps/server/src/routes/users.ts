@@ -4,6 +4,7 @@ import { prisma } from '../prisma.js';
 import { asyncRoute, validate } from '../lib/validate.js';
 import { badRequest, notFound } from '../lib/http-error.js';
 import { publicReset, publicUser } from '../lib/serialize.js';
+import { childrenOf } from '../lib/scope.js';
 import { toCents } from '../lib/money.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
 import { notify } from '../services/notifications.js';
@@ -35,6 +36,19 @@ usersRouter.get('/', asyncRoute(async (req, res) => {
     res.json({ users: [...teachers, ...owners, me].map(publicUser) });
     return;
   }
+  if (me.role === 'PARENT') {
+    const children = await childrenOf(me.id);
+    const childIds = children.map((c) => c.id);
+    const taught = await prisma.classSession.findMany({
+      where: { studentId: { in: childIds } }, select: { teacherId: true }, distinct: ['teacherId'],
+    });
+    const teachers = await prisma.user.findMany({
+      where: { id: { in: taught.map((t) => t.teacherId) } }, orderBy: { name: 'asc' },
+    });
+    res.json({ users: [...children, ...teachers, ...owners, me].map(publicUser) });
+    return;
+  }
+
   const sessions = await prisma.classSession.findMany({
     where: { teacherId: me.id }, select: { studentId: true }, distinct: ['studentId'],
   });
@@ -161,6 +175,64 @@ usersRouter.patch('/:id', requireRole('OWNER'), validate(idParam, 'params'),
       },
     });
     res.json({ user: publicUser(updated) });
+  }));
+
+/* ---------------- guardians ---------------- */
+
+/** The children of the signed-in parent. */
+usersRouter.get('/children', requireRole('PARENT', 'OWNER'), asyncRoute(async (req, res) => {
+  const me = actor(req);
+  res.json({ children: (await childrenOf(me.id)).map(publicUser) });
+}));
+
+/** One parent's children, for the Owner's assignment dialog. */
+usersRouter.get('/:id/children', requireRole('OWNER'), validate(idParam, 'params'),
+  asyncRoute(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    res.json({ children: (await childrenOf(id)).map(publicUser) });
+  }));
+
+const linkBody = z.object({ studentId: z.string().min(1) });
+
+/**
+ * The Owner attaches a student to a parent.
+ *
+ * Only the Owner: a guardian link exposes a child's timetable and invoices,
+ * so it is granted deliberately rather than claimed by whoever knows an
+ * email address.
+ */
+usersRouter.post('/:id/children', requireRole('OWNER'), validate(idParam, 'params'),
+  validate(linkBody), asyncRoute(async (req, res) => {
+    const { id } = req.params as z.infer<typeof idParam>;
+    const { studentId } = req.body as z.infer<typeof linkBody>;
+
+    const [parent, student] = await Promise.all([
+      prisma.user.findUnique({ where: { id } }),
+      prisma.user.findUnique({ where: { id: studentId } }),
+    ]);
+    if (!parent || parent.role !== 'PARENT') throw badRequest('That account is not a parent.');
+    if (!student || student.role !== 'STUDENT') throw badRequest('That account is not a student.');
+
+    await prisma.guardian.upsert({
+      where: { parentId_studentId: { parentId: id, studentId } },
+      create: { parentId: id, studentId },
+      update: {},
+    });
+    await notify({
+      userId: id, type: 'account',
+      title: 'A student was linked to your account',
+      body: `You can now follow ${student.name}'s classes and invoices.`,
+      url: '/#/dashboard',
+    });
+    res.json({ children: (await childrenOf(id)).map(publicUser) });
+  }));
+
+usersRouter.delete('/:id/children/:studentId', requireRole('OWNER'),
+  validate(z.object({ id: z.string().min(1), studentId: z.string().min(1) }), 'params'),
+  asyncRoute(async (req, res) => {
+    const { id, studentId } = req.params as { id: string; studentId: string };
+    await prisma.guardian.deleteMany({ where: { parentId: id, studentId } });
+    res.json({ children: (await childrenOf(id)).map(publicUser) });
   }));
 
 /* ---------------- password reset queue ---------------- */

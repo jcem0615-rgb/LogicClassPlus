@@ -8,15 +8,17 @@ import { badRequest, forbidden, notFound } from '../lib/http-error.js';
 import { publicInvoice } from '../lib/serialize.js';
 import { fromCents, toCents } from '../lib/money.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
+import { visibleStudentIds } from '../lib/scope.js';
 import { invoiceNumber, stripe } from '../services/billing.js';
 import { notify } from '../services/notifications.js';
 
 export const billingRouter = Router();
-billingRouter.use(requireAuth, requireRole('OWNER', 'STUDENT'));
+billingRouter.use(requireAuth, requireRole('OWNER', 'STUDENT', 'PARENT'));
 
 billingRouter.get('/invoices', asyncRoute(async (req, res) => {
   const me = actor(req);
-  const where: Prisma.InvoiceWhereInput = me.role === 'OWNER' ? {} : { studentId: me.id };
+  const ids = await visibleStudentIds(me);
+  const where: Prisma.InvoiceWhereInput = ids === null ? {} : { studentId: { in: ids } };
   const invoices = await prisma.invoice.findMany({
     where, orderBy: { issuedAt: 'desc' }, take: 100, include: { lines: true },
   });
