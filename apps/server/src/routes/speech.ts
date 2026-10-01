@@ -8,6 +8,7 @@ import { asyncRoute, validate } from '../lib/validate.js';
 import { badRequest, forbidden, notFound, payloadTooLarge } from '../lib/http-error.js';
 import { actor, requireAuth } from '../middleware/auth.js';
 import { assess, isSpeechConfigured, speechBlockedReason } from '../services/speech.js';
+import { isInRoom, studentIdsOf, withSeats } from '../lib/sessions.js';
 
 export const speechRouter = Router();
 speechRouter.use(requireAuth);
@@ -36,6 +37,10 @@ const assessBody = z.object({
   referenceText: z.string().trim().min(1, 'A phrase to read is required.').max(1000),
   audioBase64: z.string().min(1, 'No audio was sent.'),
   sessionId: z.string().min(1).optional(),
+  /* Who is being assessed, when a teacher presses the button. In a private
+     lesson it can be inferred; in a group class it cannot, and guessing would
+     file one student's score under another's name. */
+  studentId: z.string().min(1).optional(),
   language: z.string().max(12).optional(),
 });
 
@@ -54,12 +59,16 @@ speechRouter.post('/assess', assessLimit, validate(assessBody), asyncRoute(async
 
   // A session is optional — a student can practise alone — but if one is named
   // it must be theirs.
+  let seatedStudents: string[] = [];
   if (input.sessionId) {
-    const session = await prisma.classSession.findUnique({ where: { id: input.sessionId } });
+    const session = await prisma.classSession.findUnique({
+      where: { id: input.sessionId }, include: withSeats,
+    });
     if (!session) throw notFound('That session no longer exists.');
-    if (me.role !== 'OWNER' && session.teacherId !== me.id && session.studentId !== me.id) {
+    if (me.role !== 'OWNER' && !isInRoom(session, me.id)) {
       throw forbidden('That session is not yours.');
     }
+    seatedStudents = studentIdsOf(session);
   }
 
   const result = await assess(audio, input.referenceText, input.language ?? env.AZURE_SPEECH_LANGUAGE);
@@ -68,8 +77,19 @@ speechRouter.post('/assess', assessLimit, validate(assessBody), asyncRoute(async
   // but the attempt belongs to whoever is being assessed.
   let studentId = me.id;
   if (input.sessionId && me.role !== 'STUDENT') {
-    const session = await prisma.classSession.findUnique({ where: { id: input.sessionId } });
-    if (session) studentId = session.studentId;
+    if (input.studentId) {
+      if (!seatedStudents.includes(input.studentId)) {
+        throw badRequest('That student is not in this class.');
+      }
+      studentId = input.studentId;
+    } else if (seatedStudents.length === 1) {
+      studentId = seatedStudents[0]!;
+    } else {
+      throw badRequest(
+        'Several students are in this class — say which one is reading, '
+        + 'or the score lands on the wrong record.',
+      );
+    }
   }
 
   const attempt = await prisma.pronunciationAttempt.create({

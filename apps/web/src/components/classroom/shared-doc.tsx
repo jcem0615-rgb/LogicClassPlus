@@ -15,10 +15,11 @@ import { SocketProvider } from '@/lib/collab';
 import { Button } from '@/components/ui';
 import type { User } from '@/lib/types';
 
-export function SharedDoc({ sessionId, me, other, isTeacher, legacyHtml }: {
+export function SharedDoc({ sessionId, me, collaborators, isTeacher, legacyHtml }: {
   sessionId: string;
   me: User;
-  other: User;
+  /** Who else is expected in the document — a name, or "the class". */
+  collaborators: string;
   isTeacher: boolean;
   legacyHtml?: string;
 }) {
@@ -83,7 +84,7 @@ export function SharedDoc({ sessionId, me, other, isTeacher, legacyHtml }: {
           {chip('You', color)}
           {peers.length
             ? peers.map((p) => chip(`${p.name} · editing`, p.color))
-            : <span className="text-[13px] text-ink-3">waiting for {other.name.split(' ')[0]}</span>}
+            : <span className="text-[13px] text-ink-3">waiting for {collaborators}</span>}
         </div>
         <span className="font-mono text-[13px] text-ink-3">{words} word{words === 1 ? '' : 's'}</span>
       </div>

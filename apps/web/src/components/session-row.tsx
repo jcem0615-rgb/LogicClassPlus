@@ -11,13 +11,38 @@ export const joinable = (s: ClassSession): boolean =>
   s.status === 'live' ||
   (s.status === 'scheduled' && new Date(s.startsAt).getTime() - Date.now() < 6 * 3600e3);
 
+/**
+ * Who is in a class, in words. Up to two names read better than a count —
+ * "Amira and Kenji" tells a teacher what "2 students" does not — and past
+ * that a count is the only thing that fits on the row.
+ */
+export function roomRoster(
+  session: ClassSession, nameOf: (id: string) => string,
+): string {
+  const names = session.studentIds.map(nameOf);
+  // `booked` can exceed the names on hand: a parent is told how full their
+  // child's class is without being told who else is in it.
+  const hidden = Math.max(0, session.booked - names.length);
+  if (!names.length) return session.booked ? `${session.booked} students` : 'no seats taken yet';
+  if (names.length <= 2 && !hidden) return names.join(' and ');
+  if (hidden) return `${names.join(' and ')} and ${hidden} other${hidden === 1 ? '' : 's'}`;
+  return `${names.length} students`;
+}
+
 /** One class on the timeline, colour-coded by subject down its left edge. */
 export function TimelineItem({ session, as }: { session: ClassSession; as: 'teacher' | 'student' | 'owner' }) {
   const { userById } = useStore();
-  const other = userById(as === 'teacher' ? session.studentId : session.teacherId);
-  const who = as === 'owner'
-    ? `${userById(session.teacherId).name} → ${userById(session.studentId).name}`
-    : other.name;
+  const roster = roomRoster(session, (id) => userById(id).name);
+  const teacher = userById(session.teacherId);
+  const group = session.capacity > 1;
+  const who = as === 'owner' ? `${teacher.name} → ${roster}`
+    : as === 'teacher' ? roster
+      : teacher.name;
+  /* A group class has no single "other person", so there is no one timezone
+     to show; how full it is, is what the viewer actually wants there. */
+  const detail = group
+    ? `${session.booked} of ${session.capacity} seats`
+    : userById(as === 'teacher' ? session.studentIds[0] ?? '' : session.teacherId).tz;
 
   return (
     <div className="grid grid-cols-[62px_1fr] gap-3.5 border-b border-line py-3 last:border-0">
@@ -29,7 +54,7 @@ export function TimelineItem({ session, as }: { session: ClassSession; as: 'teac
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="font-semibold">{session.topic}</div>
-            <div className="text-[13px] text-ink-3">{who} · {other.tz}</div>
+            <div className="text-[13px] text-ink-3">{who} · {detail}</div>
           </div>
           <div className="flex items-center gap-2">
             <StatusPill status={session.status} />

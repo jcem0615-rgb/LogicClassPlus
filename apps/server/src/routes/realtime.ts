@@ -5,6 +5,7 @@ import { prisma } from '../prisma.js';
 import { asyncRoute } from '../lib/validate.js';
 import { forbidden, notFound } from '../lib/http-error.js';
 import { actor, requireAuth } from '../middleware/auth.js';
+import { canEnterRoom } from '../lib/sessions.js';
 import { isRecordingConfigured, livekitToken, recordingBlockedReason, roomNameFor } from '../services/recording.js';
 
 export const realtimeRouter = Router();
@@ -58,11 +59,11 @@ realtimeRouter.get('/sfu/:sessionId', asyncRoute(async (req, res) => {
   const me = actor(req);
   const session = await prisma.classSession.findUnique({
     where: { id: String(req.params['sessionId']) },
-    select: { id: true, teacherId: true, studentId: true },
+    select: { id: true, teacherId: true, minutes: true },
   });
   if (!session) throw notFound('That session no longer exists.');
-  if (me.role !== 'OWNER' && session.teacherId !== me.id && session.studentId !== me.id) {
-    throw forbidden('Only the teacher and student in this session can join it.');
+  if (!(await canEnterRoom(me, session.id))) {
+    throw forbidden('Only the teacher and students in this class can join it.');
   }
 
   if (!isRecordingConfigured()) {

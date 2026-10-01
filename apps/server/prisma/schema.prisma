@@ -99,7 +99,7 @@ model User {
   announcements     Announcement[]
   requestsAsStudent ClassRequest[]         @relation("StudentRequests")
   requestsAsTeacher ClassRequest[]         @relation("TeacherRequests")
-  sessionsAsStudent ClassSession[]         @relation("StudentSessions")
+  seats             SessionParticipant[]   @relation("SessionSeats")
   sessionsAsTeacher ClassSession[]         @relation("TeacherSessions")
   attendance        Attendance[]
   payrollLines      PayrollLine[]
@@ -217,11 +217,19 @@ model ClassRequest {
   @@index([studentId, status])
 }
 
+/// A class, private or group. `capacity` is how many students may sit in it:
+/// 1 is the ordinary one-to-one lesson, more than 1 is a group class students
+/// book themselves into. Who is in it lives in SessionParticipant and nowhere
+/// else — a `studentId` column here would be a second answer to the same
+/// question, and the two would drift.
 model ClassSession {
   id                String        @id @default(cuid())
   requestId         String?       @unique
   teacherId         String
-  studentId         String
+  capacity          Int           @default(1)
+  /// What one seat costs, for a group class the students book themselves.
+  /// Null on a private lesson, which the Owner invoices from the hourly rate.
+  seatPriceCents    Int?
   subject           Subject
   topic             String
   startsAt          DateTime
@@ -238,16 +246,33 @@ model ClassSession {
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
 
-  request    ClassRequest?          @relation(fields: [requestId], references: [id], onDelete: SetNull)
-  teacher    User                   @relation("TeacherSessions", fields: [teacherId], references: [id], onDelete: Cascade)
-  student    User                   @relation("StudentSessions", fields: [studentId], references: [id], onDelete: Cascade)
-  attendance Attendance?
-  documents  SessionDocument[]
-  messages   ChatMessage[]
-  attempts   PronunciationAttempt[]
+  request      ClassRequest?          @relation(fields: [requestId], references: [id], onDelete: SetNull)
+  teacher      User                   @relation("TeacherSessions", fields: [teacherId], references: [id], onDelete: Cascade)
+  participants SessionParticipant[]
+  attendance   Attendance?
+  documents    SessionDocument[]
+  messages     ChatMessage[]
+  attempts     PronunciationAttempt[]
 
   @@index([teacherId, startsAt])
-  @@index([studentId, startsAt])
+  @@index([startsAt])
+}
+
+/// One student's seat in a class. The row existing is the booking; `joinedAt`
+/// is stamped the first time they actually enter the room, which is how a
+/// group class tells who turned up from who merely booked.
+model SessionParticipant {
+  id        String    @id @default(cuid())
+  sessionId String
+  studentId String
+  bookedAt  DateTime  @default(now())
+  joinedAt  DateTime?
+
+  session ClassSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student User         @relation("SessionSeats", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, studentId])
+  @@index([studentId])
 }
 
 model SessionDocument {

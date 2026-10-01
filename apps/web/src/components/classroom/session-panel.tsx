@@ -8,9 +8,10 @@ import { bytes, dayTime } from '@/lib/format';
 import { Button, Flag, Summary, SubjectPill } from '@/components/ui';
 import type { ClassSession, RecordingEstimate, User } from '@/lib/types';
 
-export function SessionPanel({ session, other, isTeacher, transport, canRecord, recording, onRecording, onEnd }: {
+export function SessionPanel({ session, withWhom, isTeacher, transport, canRecord, recording, onRecording, onEnd }: {
   session: ClassSession;
-  other: User;
+  /** Who the class is with: one person, or the roster of a group. */
+  withWhom: string;
   isTeacher: boolean;
   transport: 'sfu' | 'p2p' | null;
   canRecord: boolean;
@@ -38,7 +39,7 @@ export function SessionPanel({ session, other, isTeacher, transport, canRecord, 
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-card-2 p-3.5">
         <div>
           <div className="font-semibold">{session.topic}</div>
-          <div className="text-[13px] text-ink-3">{other.name} · {other.tz}</div>
+          <div className="text-[13px] text-ink-3">{withWhom}</div>
         </div>
         <SubjectPill subject={session.subject} />
       </div>

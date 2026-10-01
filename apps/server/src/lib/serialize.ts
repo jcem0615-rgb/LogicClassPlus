@@ -1,7 +1,7 @@
 import type {
   Announcement, Attendance, ChatMessage, ClassRequest, ClassSession, Folder,
   Invoice, InvoiceLine, Notification, PasswordResetRequest, PayrollBatch,
-  PayrollLine, Resource, User,
+  PayrollLine, Resource, SessionParticipant, User,
 } from '@prisma/client';
 import { fromCents } from './money.js';
 
@@ -45,13 +45,42 @@ export const publicRequest = (r: ClassRequest) => ({
   minutes: r.minutes, status: r.status.toLowerCase(), createdAt: r.createdAt.toISOString(),
 });
 
-export const publicSession = (s: ClassSession) => ({
-  id: s.id, requestId: s.requestId ?? null, teacherId: s.teacherId, studentId: s.studentId,
-  subject: s.subject.toLowerCase(), topic: s.topic, startsAt: s.startsAt.toISOString(),
-  minutes: s.minutes, status: s.status.toLowerCase(),
-  joinedAt: s.joinedAt?.toISOString() ?? null, endedAt: s.endedAt?.toISOString() ?? null,
-  recordingUrl: s.recordingUrl,
-});
+/**
+ * A class on the wire. `studentIds` is always a list, even for a private
+ * lesson of one: a client that has to ask "is this the group shape or the
+ * single shape" before reading it will eventually ask wrong.
+ */
+export const publicSession = (
+  s: ClassSession & { participants?: SessionParticipant[] },
+  /**
+   * Whose names this viewer may learn. Omitted means everyone in the class —
+   * the teacher and the students themselves, who are about to be in a room
+   * together looking at each other. A parent is not in that room, so they are
+   * given the ids of their own children and no one else's: a group class
+   * should not quietly hand one family a list of the others.
+   */
+  visibleStudents?: string[],
+) => {
+  const all = s.participants ?? [];
+  const seats = visibleStudents
+    ? all.filter((p) => visibleStudents.includes(p.studentId))
+    : all;
+  return {
+    id: s.id, requestId: s.requestId ?? null, teacherId: s.teacherId,
+    studentIds: seats.map((p) => p.studentId),
+    attendedIds: seats.filter((p) => p.joinedAt != null).map((p) => p.studentId),
+    capacity: s.capacity,
+    /* Counted from the real list: how full a class is, is not private, and a
+       redacted roster must not make a full class look empty. */
+    booked: all.length,
+    seatsLeft: Math.max(0, s.capacity - all.length),
+    seatPrice: s.seatPriceCents == null ? null : fromCents(s.seatPriceCents),
+    subject: s.subject.toLowerCase(), topic: s.topic, startsAt: s.startsAt.toISOString(),
+    minutes: s.minutes, status: s.status.toLowerCase(),
+    joinedAt: s.joinedAt?.toISOString() ?? null, endedAt: s.endedAt?.toISOString() ?? null,
+    recordingUrl: s.recordingUrl,
+  };
+};
 
 export const publicAttendance = (a: Attendance) => ({
   id: a.id, teacherId: a.teacherId, sessionId: a.sessionId,

@@ -312,7 +312,7 @@ export function Whiteboard({ strokes, onStroke, onClear, onSave, live }: {
         Strokes are kept as vectors on a fixed page, so zooming, resizing and the
         other participant&apos;s screen size all stay in step.{' '}
         {live
-          ? <>Each finished stroke is broadcast on <span className="font-mono">classroom:board:stroke</span> and lands on your student&apos;s board.</>
+          ? <>Each finished stroke is broadcast on <span className="font-mono">classroom:board:stroke</span> and lands on every board in the room.</>
           : 'Connect to a session to broadcast each stroke to the other participant.'}
       </p>
     </div>

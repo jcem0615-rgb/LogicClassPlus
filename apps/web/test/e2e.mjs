@@ -406,7 +406,7 @@ const leak = await parent.evaluate(async (api) => {
   const token = localStorage.getItem('logicclass.token');
   const r = await fetch(`${api}/api/classes/sessions`, { headers: { authorization: `Bearer ${token}` } });
   const { sessions } = await r.json();
-  return [...new Set(sessions.map((s) => s.studentId))];
+  return [...new Set(sessions.flatMap((s) => s.studentIds))];
 }, API);
 const amiraId = await parent.evaluate(async (api) => {
   const token = localStorage.getItem('logicclass.token');
@@ -417,6 +417,18 @@ const amiraId = await parent.evaluate(async (api) => {
 ok('a parent only ever sees their own children\'s sessions',
   leak.length > 0 && leak.every((id) => amiraId.includes(id)),
   `sessions for ${leak.length} student(s), linked to ${amiraId.length}`);
+
+// A group class puts other families' children in the same record. A parent is
+// told how full it is and nothing about who else is in it.
+const shared = await parent.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/classes/sessions`, { headers: { authorization: `Bearer ${token}` } });
+  const { sessions } = await r.json();
+  return sessions.filter((s) => s.capacity > 1).map((s) => ({ seen: s.studentIds.length, booked: s.booked }));
+}, API);
+ok('a parent sees a group class without its other children',
+  shared.length > 0 && shared.some((s) => s.booked > s.seen) && shared.every((s) => s.seen <= s.booked),
+  JSON.stringify(shared));
 
 // Linking is the Owner's job, not something a parent can grant themselves.
 const selfLink = await parent.evaluate(async (api) => {
@@ -479,6 +491,149 @@ ok('a parent who signs up is a parent, awaiting approval',
   created?.role === 'parent' && created?.status === 'pending',
   JSON.stringify(created && { role: created.role, status: created.status }));
 await owner3.close();
+
+console.log('\n11. Group classes');
+
+// The teacher opens a class with seats; the browser does it, because the form
+// is half the feature.
+const tutor = await open('tutor');
+await signIn(tutor, 'daniel@logicclass.plus', 'teach1234');
+await tutor.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await tutor.waitForSelector('[data-testid=open-group]');
+const title = `Group e2e ${Date.now()}`;
+const slot = new Date(Date.now() + 3 * 3600e3);
+const localSlot = new Date(slot.getTime() - slot.getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
+await tutor.fill('[data-testid=open-group] input[name=topic]', title);
+await tutor.fill('[data-testid=open-group] input[name=when]', localSlot);
+await tutor.fill('[data-testid=open-group] input[name=capacity]', '2');
+await tutor.fill('[data-testid=open-group] input[name=seatPrice]', '9');
+await tutor.click('[data-testid=open-group] button[type=submit]');
+await tutor.waitForTimeout(2500);
+
+const classId = await tutor.evaluate(async ([api, topic]) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/classes/sessions`, { headers: { authorization: `Bearer ${token}` } });
+  const { sessions } = await r.json();
+  return sessions.find((s) => s.topic === topic)?.id ?? null;
+}, [API, title]);
+ok('a teacher can open a group class from the page', Boolean(classId), String(classId));
+
+// Two students book it from their own browsers, and the second one fills it.
+const s1 = await open('student1');
+await signIn(s1, 'amira@logicclass.plus', 'learn1234');
+await s1.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await s1.waitForSelector(`[data-book="${classId}"]`, { timeout: 15_000 });
+ok('an open class is offered to students', true);
+await s1.click(`[data-book="${classId}"]`);
+await s1.waitForTimeout(2500);
+ok('booking a seat changes the button to Leave',
+  (await s1.textContent(`[data-book="${classId}"]`)).includes('Leave'),
+  await s1.textContent(`[data-book="${classId}"]`));
+
+const s2 = await open('student2');
+await signIn(s2, 'kenji@logicclass.plus', 'learn1234');
+await s2.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await s2.waitForSelector(`[data-book="${classId}"]`, { timeout: 15_000 });
+await s2.click(`[data-book="${classId}"]`);
+await s2.waitForTimeout(2500);
+
+// Full, so it drops off the third student's list rather than offering a seat
+// that is not there.
+const s3 = await open('student3');
+await signIn(s3, 'lucia@logicclass.plus', 'learn1234');
+await s3.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await s3.waitForTimeout(2500);
+ok('a full class is not offered to anyone else',
+  await s3.locator(`[data-book="${classId}"]`).count() === 0);
+const seatRefused = await s3.evaluate(async ([api, id]) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/classes/sessions/${id}/book`, {
+    method: 'POST', headers: { authorization: `Bearer ${token}` },
+  });
+  return { status: r.status, body: await r.json() };
+}, [API, classId]);
+ok('and the API refuses the seat too', seatRefused.status === 400
+  && /full/i.test(seatRefused.body.error?.message ?? ''), JSON.stringify(seatRefused));
+
+// The class belongs to both students' timetables now.
+for (const [who, page] of [['amira', s1], ['kenji', s2]]) {
+  const mine = await page.evaluate(async ([api, id]) => {
+    const token = localStorage.getItem('logicclass.token');
+    const r = await fetch(`${api}/api/classes/sessions`, { headers: { authorization: `Bearer ${token}` } });
+    const { sessions } = await r.json();
+    return sessions.some((s) => s.id === id);
+  }, [API, classId]);
+  ok(`the class is on ${who}'s timetable`, mine);
+}
+
+// Two students and a teacher in one room: each should see the other two.
+await Promise.all([
+  tutor.goto(`${WEB}/room/${classId}`, { waitUntil: 'networkidle' }),
+  s1.goto(`${WEB}/room/${classId}`, { waitUntil: 'networkidle' }),
+  s2.goto(`${WEB}/room/${classId}`, { waitUntil: 'networkidle' }),
+]);
+for (const page of [tutor, s1, s2]) {
+  await page.waitForSelector('#hw-join', { timeout: 20_000 }).catch(() => undefined);
+}
+for (const page of [tutor, s1, s2]) {
+  await page.click('#hw-join').catch(() => undefined);
+  await page.waitForTimeout(1500);
+}
+await tutor.waitForTimeout(6000);
+const tiles = await Promise.all([tutor, s1, s2].map(async (page) => {
+  const el = page.locator('[data-testid=remote-tiles]');
+  return (await el.count()) ? Number(await el.getAttribute('data-count')) : 0;
+}));
+ok('all three see the other two in the room', tiles.every((n) => n === 2), JSON.stringify(tiles));
+
+const connected = await tutor.evaluate(() => {
+  const pills = [...document.querySelectorAll('[data-testid=remote-tiles] span')];
+  return pills.filter((p) => /connected/i.test(p.textContent ?? '')).length;
+});
+ok('and the media actually connects between them', connected >= 2, `connected tiles: ${connected}`);
+
+const attended = await tutor.evaluate(async ([api, id]) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/classes/sessions/${id}`, { headers: { authorization: `Bearer ${token}` } });
+  const { session } = await r.json();
+  return session.attendedIds.length;
+}, [API, classId]);
+ok('the class records which students turned up', attended === 2, `attended: ${attended}`);
+
+for (const page of [s1, s2]) await page.close();
+await s3.close();
+
+// The Owner bills each seat separately, and pressing it twice bills nobody twice.
+const owner4 = await open('owner4');
+await signIn(owner4, 'owner@logicclass.plus', 'admin1234');
+await owner4.goto(`${WEB}/billing`, { waitUntil: 'networkidle' });
+await owner4.waitForSelector(`[data-bill="${classId}"]`, { timeout: 15_000 });
+await owner4.click(`[data-bill="${classId}"]`);
+await owner4.waitForTimeout(3000);
+const billed = await owner4.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/billing/invoices`, { headers: { authorization: `Bearer ${token}` } });
+  const { invoices } = await r.json();
+  return invoices.filter((i) => i.lines.some((l) => l.label.includes('group seat')));
+}, API);
+const forThis = billed.filter((i) => i.lines.some((l) => l.label.startsWith(title)));
+ok('each seat is invoiced to its own student',
+  forThis.length === 2 && forThis.every((i) => i.amount === 9)
+  && new Set(forThis.map((i) => i.studentId)).size === 2,
+  JSON.stringify(forThis.map((i) => [i.studentId.slice(0, 5), i.amount])));
+
+await owner4.click(`[data-bill="${classId}"]`);
+await owner4.waitForTimeout(3000);
+const billedAgain = await owner4.evaluate(async ([api, t]) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/billing/invoices`, { headers: { authorization: `Bearer ${token}` } });
+  const { invoices } = await r.json();
+  return invoices.filter((i) => i.lines.some((l) => l.label.startsWith(t))).length;
+}, [API, title]);
+ok('and invoicing the class again does not bill anyone twice',
+  billedAgain === 2, `invoices: ${billedAgain}`);
+await owner4.close();
+await tutor.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');

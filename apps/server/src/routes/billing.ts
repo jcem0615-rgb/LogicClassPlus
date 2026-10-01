@@ -67,6 +67,69 @@ billingRouter.post('/invoices', requireRole('OWNER'), validate(createInvoice),
   }));
 
 /**
+ * Invoice a group class: one invoice per student who has a seat, each for the
+ * seat price.
+ *
+ * The seat price is what makes a group worth running for the student — six
+ * people at nine dollars is cheaper for each of them than an hour alone and
+ * better for the teacher than one. Billing the class once and splitting it
+ * would come to the same number only until somebody drops out, so each seat
+ * is its own invoice from the start.
+ *
+ * Re-running it skips students already invoiced for this class rather than
+ * billing them twice, because the obvious way to use this button is to press
+ * it again after a late booking.
+ */
+billingRouter.post('/invoices/for-class/:sessionId', requireRole('OWNER'),
+  validate(z.object({ dueInDays: z.number().int().min(1).max(90).default(14) })),
+  asyncRoute(async (req, res) => {
+    const { dueInDays } = req.body as { dueInDays: number };
+    const session = await prisma.classSession.findUnique({
+      where: { id: String(req.params['sessionId']) },
+      include: { participants: { include: { student: true } } },
+    });
+    if (!session) throw notFound('That class no longer exists.');
+    if (session.seatPriceCents == null) {
+      throw badRequest('That class has no seat price, so there is nothing to bill.');
+    }
+    if (!session.participants.length) throw badRequest('Nobody has booked that class.');
+
+    const label = `${session.topic} — group seat, ${session.minutes} min`;
+    const already = await prisma.invoiceLine.findMany({
+      where: { label, invoice: { studentId: { in: session.participants.map((p) => p.studentId) } } },
+      include: { invoice: { select: { studentId: true } } },
+    });
+    const billed = new Set(already.map((l) => l.invoice.studentId));
+    const toBill = session.participants.filter((p) => !billed.has(p.studentId));
+
+    const dueAt = new Date(Date.now() + dueInDays * 24 * 3600e3);
+    const created = [];
+    for (const seat of toBill) {
+      const count = await prisma.invoice.count();
+      const invoice = await prisma.invoice.create({
+        data: {
+          number: invoiceNumber(count + 1), studentId: seat.studentId,
+          amountCents: session.seatPriceCents, currency: env.PAYROLL_CURRENCY,
+          status: 'OPEN', dueAt,
+          lines: { create: [{ label, amountCents: session.seatPriceCents }] },
+        },
+        include: { lines: true },
+      });
+      created.push(invoice);
+      await notify({
+        userId: seat.studentId, type: 'billing', title: `Invoice ${invoice.number} is open`,
+        body: `${invoice.currency} ${fromCents(invoice.amountCents).toFixed(2)} for your seat in “${session.topic}”.`,
+        url: '/#/billing',
+      });
+    }
+
+    res.status(created.length ? 201 : 200).json({
+      invoices: created.map(publicInvoice),
+      skipped: session.participants.length - created.length,
+    });
+  }));
+
+/**
  * Starts payment. With Stripe configured this creates a real PaymentIntent and
  * returns its client secret; the invoice is only marked paid by the webhook,
  * never by the browser saying so.

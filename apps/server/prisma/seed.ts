@@ -148,8 +148,9 @@ async function main(): Promise<void> {
     });
     await prisma.classSession.create({
       data: {
-        requestId: upcoming.id, teacherId: daniel.id, studentId: amira.id, subject: 'MATH',
+        requestId: upcoming.id, teacherId: daniel.id, subject: 'MATH',
         topic: upcoming.topic, startsAt: upcoming.requestedFor, minutes: 60, status: 'SCHEDULED',
+        participants: { create: { studentId: amira.id } },
       },
     });
 
@@ -183,7 +184,8 @@ async function main(): Promise<void> {
 
         const session = await prisma.classSession.create({
           data: {
-            teacherId: track.teacher.id, studentId: student.id, subject: track.subject,
+            teacherId: track.teacher.id, subject: track.subject,
+            participants: { create: { studentId: student.id, joinedAt: startsAt } },
             topic: track.topics[i]!, startsAt, minutes: track.minutes, status: 'COMPLETED',
             joinedAt: new Date(startsAt.getTime() + late * 60_000),
             endedAt: new Date(startsAt.getTime() + (track.minutes + late) * 60_000),
@@ -206,14 +208,36 @@ async function main(): Promise<void> {
     // One no-show, so the forfeit rule is visible on a real record.
     const missed = await prisma.classSession.create({
       data: {
-        teacherId: daniel.id, studentId: amira.id, subject: 'MATH', topic: 'Simultaneous equations',
+        teacherId: daniel.id, subject: 'MATH', topic: 'Simultaneous equations',
         startsAt: at(-26, 16), minutes: 60, status: 'NO_SHOW',
+        participants: { create: { studentId: amira.id } },
       },
     });
     await prisma.attendance.create({
       data: {
         teacherId: daniel.id, sessionId: missed.id, scheduledStart: missed.startsAt, noShow: true,
         deductionCents: deductionForCents({ minutesLate: 0, noShow: true }, 60, daniel.hourlyRateCents ?? 0),
+      },
+    });
+  }
+
+  // Two open group classes, so the booking flow has something real to book
+  // into: one already half full, one empty. The seat price is deliberately
+  // below the hourly rate — that is the point of a group.
+  if (await prisma.classSession.count({ where: { capacity: { gt: 1 } } }) === 0) {
+    await prisma.classSession.create({
+      data: {
+        teacherId: daniel.id, subject: 'MATH', topic: 'Quadratics clinic — group',
+        startsAt: new Date(Date.now() + 2 * DAY), minutes: 60,
+        capacity: 6, seatPriceCents: 900,
+        participants: { create: [{ studentId: amira.id }, { studentId: lucia.id }] },
+      },
+    });
+    await prisma.classSession.create({
+      data: {
+        teacherId: hana.id, subject: 'ENGLISH', topic: 'IELTS speaking workshop',
+        startsAt: new Date(Date.now() + 3 * DAY + 2 * HOUR), minutes: 90,
+        capacity: 4, seatPriceCents: 1_200,
       },
     });
   }
@@ -275,6 +299,7 @@ async function main(): Promise<void> {
   const counts = {
     users: await prisma.user.count(),
     folders: await prisma.folder.count(),
+    groupClasses: await prisma.classSession.count({ where: { capacity: { gt: 1 } } }),
     resources: await prisma.resource.count(),
     sessions: await prisma.classSession.count(),
     attendance: await prisma.attendance.count(),

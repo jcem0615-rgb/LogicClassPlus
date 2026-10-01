@@ -26,7 +26,8 @@ async function visibleTeacherIds(userId: string, role: string): Promise<string[]
   if (role === 'OWNER') return 'all';
   if (role === 'TEACHER') return [userId];
   const sessions = await prisma.classSession.findMany({
-    where: { studentId: userId }, select: { teacherId: true }, distinct: ['teacherId'],
+    where: { participants: { some: { studentId: userId } } },
+    select: { teacherId: true }, distinct: ['teacherId'],
   });
   const requests = await prisma.classRequest.findMany({
     where: { studentId: userId, status: 'ACCEPTED' }, select: { teacherId: true }, distinct: ['teacherId'],

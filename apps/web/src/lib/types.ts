@@ -46,11 +46,21 @@ export interface ClassRequest {
 export type SessionStatus = 'scheduled' | 'live' | 'completed' | 'no_show' | 'cancelled';
 
 export interface ClassSession {
-  id: string; requestId: string | null; teacherId: string; studentId: string;
+  id: string; requestId: string | null; teacherId: string;
+  /** Every student with a seat. One of them for a private lesson. */
+  studentIds: string[];
+  /** The ones who actually entered the room, a subset of the above. */
+  attendedIds: string[];
+  /** How many seats are taken, counted before any redaction of studentIds. */
+  booked: number;
+  capacity: number; seatsLeft: number; seatPrice: number | null;
   subject: Subject; topic: string; startsAt: string; minutes: number;
   status: SessionStatus; joinedAt: string | null; endedAt: string | null;
   recordingUrl: string | null;
 }
+
+/** A class with more than one seat is a group class; one seat is private. */
+export const isGroup = (s: ClassSession): boolean => s.capacity > 1;
 
 export interface AttendanceRow {
   id: string; teacherId: string; sessionId: string; scheduledStart: string;

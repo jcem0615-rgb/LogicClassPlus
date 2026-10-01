@@ -10,6 +10,7 @@ import {
   startRecording, stopRecording, verifyWebhook, type Preset,
 } from '../services/recording.js';
 import { notify } from '../services/notifications.js';
+import { studentIdsIn } from '../lib/sessions.js';
 import { emitToSession } from '../realtime/gateway.js';
 
 export const recordingsRouter = Router();
@@ -150,10 +151,12 @@ recordingsRouter.post('/:sessionId/start', requireRole('TEACHER', 'OWNER'), asyn
   // Both participants are told, every time. Recording a person silently is not
   // a feature — it is a problem, and in many places it is unlawful.
   emitToSession(session.id, 'classroom:recording', { status: 'started' });
-  await notify({
-    userId: session.studentId, type: 'recording', title: 'This class is being recorded',
-    body: `${session.topic} — recording started by your teacher.`, url: `/#/room/${session.id}`,
-  });
+  for (const studentId of await studentIdsIn(session.id)) {
+    await notify({
+      userId: studentId, type: 'recording', title: 'This class is being recorded',
+      body: `${session.topic} — recording started by your teacher.`, url: `/#/room/${session.id}`,
+    });
+  }
 
   res.status(201).json({
     egressId: egress.egressId,

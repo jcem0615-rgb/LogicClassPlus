@@ -16,3 +16,6 @@ apps/web/next-env.d.ts
 apps/web/public/sw.js
 apps/web/public/workbox-*.js
 apps/web/tsconfig.tsbuildinfo
+
+# local upload storage, written when S3 is not configured
+apps/server/var/

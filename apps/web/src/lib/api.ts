@@ -199,6 +199,17 @@ export const api = {
   decideRequest: (id: string, decision: 'accept' | 'decline') =>
     patch<{ request: ClassRequest; session?: ClassSession }>(`/classes/requests/${id}`, { decision }),
   sessions: () => get<{ sessions: ClassSession[] }>('/classes/sessions'),
+
+  /* group classes */
+  openClasses: () => get<{ sessions: ClassSession[] }>('/classes/group/open'),
+  openGroupClass: (input: {
+    subject: Subject; topic: string; startsAt: string; minutes: number;
+    capacity: number; seatPrice: number;
+  }) => post<{ session: ClassSession }>('/classes/group', input),
+  bookSeat: (id: string) => post<{ session: ClassSession }>(`/classes/sessions/${id}/book`),
+  releaseSeat: (id: string) => del<{ session: ClassSession }>(`/classes/sessions/${id}/book`),
+  invoiceClass: (id: string, dueInDays = 14) =>
+    post<{ invoices: Invoice[]; skipped: number }>(`/billing/invoices/for-class/${id}`, { dueInDays }),
   session: (id: string) => get<{
     session: ClassSession; documents: Record<string, string>; messages: ChatMessage[];
   }>(`/classes/sessions/${id}`),

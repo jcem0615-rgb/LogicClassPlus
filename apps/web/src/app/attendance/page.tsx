@@ -6,6 +6,7 @@ import { useStore } from '@/lib/store';
 import { dayTime, duration, money, time } from '@/lib/format';
 import { Shell } from '@/components/shell';
 import { Button, Card, CardHead, Empty, Flag, Pill, Summary, Table, Td, Th } from '@/components/ui';
+import { roomRoster } from '@/components/session-row';
 
 export default function AttendancePage() {
   const store = useStore();
@@ -75,7 +76,7 @@ export default function AttendancePage() {
                 <div>
                   <div className="font-semibold">{next.topic}</div>
                   <div className="text-[13px] text-ink-3">
-                    Scheduled {dayTime(next.startsAt)} · with {store.userById(next.studentId).name}
+                    Scheduled {dayTime(next.startsAt)} · with {roomRoster(next, (id) => store.userById(id).name)}
                   </div>
                 </div>
                 <Button variant="primary" onClick={() => {

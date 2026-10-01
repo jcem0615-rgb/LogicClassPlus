@@ -53,6 +53,12 @@ const inProgress = (s: ClassSession): boolean =>
   s.status === 'live'
   && Date.now() < new Date(s.startsAt).getTime() + (s.minutes + 120) * 60e3;
 
+/* Which of this parent's children is in a given class. A group class has
+   several students in it and most of them are somebody else's. */
+const childrenIn = (s: ClassSession, children: User[]): string =>
+  children.filter((c) => s.studentIds.includes(c.id)).map((c) => c.name).join(', ')
+  || 'your child';
+
 /** Classes that have not finished: in progress first, then the ones ahead. */
 const unfinished = (sessions: ClassSession[]): ClassSession[] => [
   ...sessions.filter(inProgress),
@@ -329,16 +335,16 @@ function ParentHome() {
       <Summary items={[
         { k: 'Children', v: children.length, s: children.map((c) => c.name.split(' ')[0]).join(', ') },
         live
-          ? { k: 'In class now', v: time(live.startsAt), s: store.userById(live.studentId).name }
+          ? { k: 'In class now', v: time(live.startsAt), s: childrenIn(live, children) }
           : { k: 'Next class', v: next ? time(next.startsAt) : '—',
-              s: next ? `${day(next.startsAt)} · ${store.userById(next.studentId).name}` : 'none booked' },
+              s: next ? `${day(next.startsAt)} · ${childrenIn(next, children)}` : 'none booked' },
         { k: 'Classes finished', v: done.length,
           s: `${(done.reduce((sum, s) => sum + s.minutes, 0) / 60).toFixed(1)}h taught` },
         { k: 'Balance due', v: money(due), s: open.length ? `${open.length} open` : 'nothing owing' },
       ]} />
 
       {children.map((child) => {
-        const theirs = store.sessions.filter((s) => s.studentId === child.id);
+        const theirs = store.sessions.filter((s) => s.studentIds.includes(child.id));
         const upcoming = unfinished(theirs);
         const finished = theirs.filter((s) => s.status === 'completed');
         const missed = theirs.filter((s) => s.status === 'no_show');

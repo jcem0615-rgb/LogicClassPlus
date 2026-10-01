@@ -13,7 +13,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
 import { useStore } from '@/lib/store';
-import { emit, on } from '@/lib/socket';
+import { emit, on, socketId } from '@/lib/socket';
 import { PeerConnection, type SignalMessage } from '@/lib/webrtc';
 import { SfuSession } from '@/lib/sfu';
 import { bytes, duration, initials, time } from '@/lib/format';
@@ -26,6 +26,7 @@ import { Equations } from '@/components/classroom/equations';
 import { SharedDoc } from '@/components/classroom/shared-doc';
 import { Pronunciation } from '@/components/classroom/pronunciation';
 import { SessionPanel } from '@/components/classroom/session-panel';
+import { roomRoster } from '@/components/session-row';
 import type { ChatMessage, ClassSession } from '@/lib/types';
 
 type Tab = 'whiteboard' | 'annotate' | 'equations' | 'document' | 'speech' | 'notes';
@@ -37,6 +38,56 @@ const TABS: Array<[Tab, string, 'math' | 'english' | null]> = [
   ['speech', 'Pronunciation', 'english'],
   ['notes', 'Session', null],
 ];
+
+/**
+ * One other person in the room, whichever transport brought them. A direct
+ * connection keys them by socket (the same user in two tabs is two tiles,
+ * which is what you see on screen too); the media server keys them by
+ * identity.
+ */
+interface Remote {
+  key: string;
+  userId: string;
+  name: string;
+  stream: MediaStream | null;
+  state: string;
+}
+
+function RemoteTile({ remote, name, tone }: {
+  remote: Remote; name: string; tone: 'ok' | 'warn' | 'crit' | 'neutral';
+}) {
+  const connected = remote.state === 'connected' && remote.stream;
+  return (
+    <div className="relative grid aspect-[16/10] place-items-center overflow-hidden rounded-md border border-line bg-[#0A1214]">
+      <video
+        autoPlay playsInline
+        // srcObject cannot be set from JSX, and the element is remounted
+        // whenever the grid reflows, so it is assigned on every ref call.
+        ref={(el) => {
+          if (el && remote.stream && el.srcObject !== remote.stream) {
+            el.srcObject = remote.stream;
+            void el.play().catch(() => undefined);
+          }
+        }}
+        className={`h-full w-full object-cover ${connected ? '' : 'hidden'}`}
+      />
+      {!connected ? (
+        <div className="grid h-14 w-14 place-items-center rounded-full bg-brand font-ui text-[18px] font-semibold text-on-brand">
+          {initials(name)}
+        </div>
+      ) : null}
+      <span className="absolute bottom-2 left-2 rounded bg-[rgba(8,16,18,.72)] px-2 py-1 font-mono text-[11px] text-[#E8F2EF]">
+        {name}
+      </span>
+      <span className="absolute right-2 top-2">
+        <Pill tone={tone} dot>
+          {remote.state === 'closed' ? 'Ended'
+            : remote.state.charAt(0).toUpperCase() + remote.state.slice(1)}
+        </Pill>
+      </span>
+    </div>
+  );
+}
 
 export default function RoomPage() {
   const params = useParams<{ id: string }>();
@@ -62,8 +113,7 @@ export default function RoomPage() {
   const [skew, setSkew] = useState(0);
   const [transport, setTransport] = useState<'sfu' | 'p2p' | null>(null);
   const [canRecord, setCanRecord] = useState(false);
-  const [peerState, setPeerState] = useState<string | null>(null);
-  const [peerPresent, setPeerPresent] = useState(false);
+  const [remotes, setRemotes] = useState<Remote[]>([]);
   const [roomRecording, setRoomRecording] = useState(false);
   const [localRecording, setLocalRecording] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -71,17 +121,80 @@ export default function RoomPage() {
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [documents, setDocuments] = useState<Record<string, string>>({});
 
-  const remoteVideo = useRef<HTMLVideoElement>(null);
   const localVideo = useRef<HTMLVideoElement>(null);
-  const peer = useRef<PeerConnection | null>(null);
+  /* One connection per peer, keyed by their socket. A private lesson has a
+     map of one; the code does not need to know which kind of class it is. */
+  const peers = useRef(new Map<string, PeerConnection>());
   const sfu = useRef<SfuSession | null>(null);
-  const remoteStream = useRef<MediaStream | null>(null);
   const localRecorder = useRef<MediaRecorder | null>(null);
   const chatLog = useRef<HTMLDivElement>(null);
 
   const me = store.user;
   const isTeacher = Boolean(me && session && me.id === session.teacherId);
-  const other = store.userById(session ? (isTeacher ? session.studentId : session.teacherId) : '');
+  const group = Boolean(session && session.capacity > 1);
+  /* Who the chat box and the empty-room caption talk about. In a group there
+     is no "the other person", so it addresses the class instead. */
+  const audience = !session ? 'the class'
+    : group ? 'the class'
+      : store.userById(isTeacher ? session.studentIds[0] ?? '' : session.teacherId).name;
+  /* The line under the class title. A private lesson names the one other
+     person and their timezone; a group names who booked and how full it is,
+     because there is no single timezone to report. */
+  const withWhom = !session ? ''
+    : group
+      ? `${roomRoster(session, (id) => store.userById(id).name)} · ${session.booked} of ${session.capacity} seats`
+      : (() => {
+        const u = store.userById(isTeacher ? session.studentIds[0] ?? '' : session.teacherId);
+        return `${u.name} · ${u.tz}`;
+      })();
+
+  const upsertRemote = useCallback((key: string, patch: Partial<Remote>) => {
+    setRemotes((all) => {
+      const found = all.find((r) => r.key === key);
+      if (!found) {
+        return [...all, {
+          key, userId: '', name: 'Joining…', stream: null, state: 'connecting', ...patch,
+        }];
+      }
+      return all.map((r) => (r.key === key ? { ...r, ...patch } : r));
+    });
+  }, []);
+
+  const dropRemote = useCallback((key: string) => {
+    peers.current.get(key)?.close();
+    peers.current.delete(key);
+    setRemotes((all) => all.filter((r) => r.key !== key));
+  }, []);
+
+  /**
+   * Open a connection to one peer.
+   *
+   * Politeness has to be agreed without talking: both sides compare the two
+   * socket ids and the lower one waits. The old rule — the student is polite —
+   * worked only because there was exactly one of each. Put two students in a
+   * room and they would both be polite, both wait, and nothing would ever be
+   * offered.
+   */
+  const connectToPeer = useCallback((info: { socketId: string; userId?: string; name?: string }) => {
+    if (!session || peers.current.has(info.socketId)) return;
+    const mine = socketId() ?? '';
+    const connection = new PeerConnection(session.id, mine < info.socketId, streamRef.current);
+    peers.current.set(info.socketId, connection);
+    upsertRemote(info.socketId, {
+      userId: info.userId ?? '',
+      ...(info.name ? { name: info.name } : {}),
+    });
+    connection.on('remote-stream', (incoming) => upsertRemote(info.socketId, { stream: incoming }));
+    connection.on('state', (st) => {
+      upsertRemote(info.socketId, { state: st.state });
+      if (st.state === 'failed') {
+        store.toast('err', 'Could not connect to a participant', st.turn
+          ? 'The connection failed even through TURN. Ask them to rejoin.'
+          : 'No TURN server is configured. Set TURN_URLS for participants behind strict NAT.');
+      }
+    });
+    void connection.open(info.socketId);
+  }, [session, store, upsertRemote]);
 
   /* ---------- find the session, even if this tab predates it ---------- */
   useEffect(() => {
@@ -112,6 +225,12 @@ export default function RoomPage() {
       const previous = streamRef.current;
       streamRef.current = next;
       setStream(next);
+      /* Push the new camera down the connections that are already open.
+         PeerConnection has had replaceTracks since the start and nothing ever
+         called it, so switching devices mid-class changed the picture in the
+         corner of your own screen and nowhere else. */
+      peers.current.forEach((connection) => { void connection.replaceTracks(next); });
+      void sfu.current?.replaceTracks(next);
       if (previous && previous !== next) previous.getTracks().forEach((t) => t.stop());
       setMediaError(null);
       const list = await navigator.mediaDevices.enumerateDevices();
@@ -171,16 +290,20 @@ export default function RoomPage() {
     });
     const offClear = on('classroom:board:clear', () => setStrokes([]));
     const offSignal = on<SignalMessage>('classroom:signal', (message) => {
-      void peer.current?.handleSignal(message);
+      const key = message.fromSocket;
+      if (!key) return;
+      // An offer can arrive before the peer-joined that announces its sender,
+      // so the connection is opened here too rather than assuming one exists.
+      if (!peers.current.has(key)) connectToPeer({ socketId: key, userId: message.from });
+      void peers.current.get(key)?.handleSignal(message);
     });
-    const offJoined = on<{ name: string; socketId: string }>('classroom:peer-joined', (info) => {
-      setPeerPresent(true);
-      if (peer.current) void peer.current.open(info.socketId);
-    });
-    const offLeft = on('classroom:peer-left', () => {
-      setPeerPresent(false);
-      remoteStream.current = null;
-      if (remoteVideo.current) remoteVideo.current.srcObject = null;
+    const offJoined = on<{ userId: string; name: string; socketId: string }>(
+      'classroom:peer-joined', (info) => connectToPeer(info),
+    );
+    const offLeft = on<{ userId: string; socketId?: string }>('classroom:peer-left', (info) => {
+      if (info.socketId) { dropRemote(info.socketId); return; }
+      // An older server sends only the user id; drop every socket they hold.
+      remotes.filter((r) => r.userId === info.userId).forEach((r) => dropRemote(r.key));
     });
     const offRecording = on<{ status: string; bytes?: number }>('classroom:recording', (info) => {
       if (info.status === 'started') {
@@ -196,7 +319,7 @@ export default function RoomPage() {
     return () => {
       offMessage(); offStroke(); offClear(); offSignal(); offJoined(); offLeft(); offRecording();
     };
-  }, [joined, session, store]);
+  }, [joined, session, store, connectToPeer, dropRemote, remotes]);
 
   useEffect(() => {
     if (chatLog.current) chatLog.current.scrollTop = chatLog.current.scrollHeight;
@@ -229,19 +352,26 @@ export default function RoomPage() {
       setCanRecord(Boolean(creds.canRecord));
       const media = new SfuSession();
       sfu.current = media;
-      media.on('remote-track', ({ track }) => {
-        if (!remoteStream.current) remoteStream.current = new MediaStream();
+      media.on('remote-track', ({ track, participant }) => {
+        // One tile per publisher, the same shape the mesh produces, so the
+        // grid below does not care which transport it is looking at.
+        const key = participant.identity;
         const raw = track.mediaStreamTrack;
-        if (raw && !remoteStream.current.getTrackById(raw.id)) remoteStream.current.addTrack(raw);
-        if (remoteVideo.current) {
-          remoteVideo.current.srcObject = remoteStream.current;
-          void remoteVideo.current.play().catch(() => undefined);
-        }
-        setPeerState('connected');
+        setRemotes((all) => {
+          const found = all.find((r) => r.key === key);
+          const stream = found?.stream ?? new MediaStream();
+          if (raw && !stream.getTrackById(raw.id)) stream.addTrack(raw);
+          const next = {
+            key, userId: key, name: participant.name || store.userById(key).name,
+            stream, state: 'connected',
+          };
+          return found ? all.map((r) => (r.key === key ? { ...r, ...next } : r)) : [...all, next];
+        });
       });
-      media.on('peer', (info) => setPeerPresent(info.present));
-      media.on('state', (info) => setPeerState(
-        info.state === 'connected' ? 'connected' : info.state === 'disconnected' ? 'closed' : 'connecting'));
+      media.on('remote-track-gone', () => undefined);
+      media.on('peer', (info) => {
+        if (!info.present) setRemotes((all) => all.filter((r) => r.key !== info.identity));
+      });
       media.on('recording', (info) => setRoomRecording(info.active));
       try {
         await media.connect(creds.url, creds.token, stream);
@@ -256,34 +386,19 @@ export default function RoomPage() {
       setCanRecord(false);
     }
 
-    emit('classroom:join', session.id, (ack: { peers?: Array<{ socketId: string }> } | undefined) => {
-      const peers = ack?.peers ?? [];
-      setPeerPresent(peers.length > 0);
+    emit('classroom:join', session.id, (
+      ack: { peers?: Array<{ socketId: string; userId: string; name: string }> } | undefined,
+    ) => {
       if (sfu.current) return;
-      const connection = new PeerConnection(session.id, me?.id === session.studentId, stream);
-      peer.current = connection;
-      connection.on('remote-stream', (incoming) => {
-        remoteStream.current = incoming;
-        if (remoteVideo.current) {
-          remoteVideo.current.srcObject = incoming;
-          void remoteVideo.current.play().catch(() => undefined);
-        }
-      });
-      connection.on('state', (info) => {
-        setPeerState(info.state);
-        if (info.state === 'failed') {
-          store.toast('err', 'Could not connect to the other participant', info.turn
-            ? 'The connection failed even through TURN. Ask them to rejoin.'
-            : 'No TURN server is configured. Set TURN_URLS for participants behind strict NAT.');
-        }
-      });
-      if (peers[0]) void connection.open(peers[0].socketId);
+      // Everyone already in the room, not just the first of them.
+      for (const info of ack?.peers ?? []) connectToPeer(info);
     });
   }
 
   const leave = useCallback(() => {
-    peer.current?.close();
-    peer.current = null;
+    peers.current.forEach((connection) => connection.close());
+    peers.current.clear();
+    setRemotes([]);
     void sfu.current?.disconnect();
     sfu.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -380,11 +495,12 @@ export default function RoomPage() {
       </Shell>
     );
   }
-  if (me && me.role !== 'owner' && me.id !== session.teacherId && me.id !== session.studentId) {
+  if (me && me.role !== 'owner' && me.id !== session.teacherId
+      && !session.studentIds.includes(me.id)) {
     return (
       <Shell title="Classroom">
         <Empty title="Not your classroom"
-          body="Only the teacher and student in this session can enter it." />
+          body="Only the teacher and the students with a seat in this class can enter it." />
       </Shell>
     );
   }
@@ -397,32 +513,29 @@ export default function RoomPage() {
     <Shell title="Classroom" subtitle={session.topic} bare>
       <div className="grid min-h-0 flex-1 gap-3.5 lg:grid-cols-[300px_1fr]">
         <div className="flex min-h-0 flex-col gap-3 overflow-y-auto pr-0.5">
-          <div className="relative grid aspect-[16/10] place-items-center overflow-hidden rounded-md border border-line bg-[#0A1214]">
-            <video ref={remoteVideo} autoPlay playsInline
-              className={`h-full w-full object-cover ${peerState === 'connected' ? '' : 'hidden'}`} />
-            {peerState !== 'connected' ? (
+          {remotes.length === 0 ? (
+            <div className="grid aspect-[16/10] place-items-center overflow-hidden rounded-md border border-line bg-[#0A1214]">
               <div className="px-4 text-center">
                 <div className="mx-auto grid h-20 w-20 place-items-center rounded-full bg-brand font-ui text-[26px] font-semibold text-on-brand">
-                  {initials(other.name)}
+                  {initials(group ? session.topic : audience)}
                 </div>
-                <div className="mt-3 font-mono text-[11px] text-[#7F9490]">
-                  {peerPresent ? 'connected — negotiating media'
-                    : transport === 'sfu' ? 'waiting for the other participant'
+                <div className="mt-3 font-mono text-[11px] text-[#7F9490]" data-testid="room-waiting">
+                  {group
+                    ? `waiting for the class — ${session.booked} booked`
                     : 'waiting for the other participant to join'}
                 </div>
               </div>
-            ) : null}
-            <span className="absolute bottom-2 left-2 rounded bg-[rgba(8,16,18,.72)] px-2 py-1 font-mono text-[11px] text-[#E8F2EF]">
-              {other.name}
-            </span>
-            {peerState ? (
-              <span className="absolute right-2 top-2">
-                <Pill tone={stateTone[peerState] ?? 'neutral'} dot>
-                  {peerState === 'closed' ? 'Ended' : peerState.charAt(0).toUpperCase() + peerState.slice(1)}
-                </Pill>
-              </span>
-            ) : null}
-          </div>
+            </div>
+          ) : (
+            <div className={`grid gap-2 ${remotes.length > 1 ? 'grid-cols-2' : 'grid-cols-1'}`}
+              data-testid="remote-tiles" data-count={remotes.length}>
+              {remotes.map((r) => (
+                <RemoteTile key={r.key} remote={r}
+                  name={r.name !== 'Joining…' ? r.name : store.userById(r.userId).name}
+                  tone={stateTone[r.state] ?? 'neutral'} />
+              ))}
+            </div>
+          )}
 
           <div className="relative grid aspect-[16/11] place-items-center overflow-hidden rounded-md border border-line bg-[#0A1214]">
             <video ref={localVideo} autoPlay playsInline muted
@@ -504,7 +617,7 @@ export default function RoomPage() {
             </div>
             <form className="flex gap-1.5 border-t border-line p-2.5" onSubmit={sendChat}>
               <input id="chat-input" value={draft} autoComplete="off"
-                placeholder={`Message ${other.name.split(' ')[0]}`}
+                placeholder={`Message ${group ? 'the class' : audience.split(' ')[0]}`}
                 onChange={(e) => setDraft(e.target.value)} />
               <Button size="sm" variant="primary" type="submit">Send</Button>
             </form>
@@ -556,14 +669,14 @@ export default function RoomPage() {
               />
             ) : null}
             {tab === 'document' && me ? (
-              <SharedDoc sessionId={session.id} me={me} other={other} isTeacher={isTeacher}
+              <SharedDoc sessionId={session.id} me={me} collaborators={audience} isTeacher={isTeacher}
                 legacyHtml={documents.document && !documents.document.startsWith('y:')
                   ? documents.document : undefined} />
             ) : null}
             {tab === 'speech' ? <Pronunciation sessionId={session.id} /> : null}
             {tab === 'notes' ? (
               <SessionPanel
-                session={session} other={other} isTeacher={isTeacher}
+                session={session} withWhom={withWhom} isTeacher={isTeacher}
                 transport={transport} canRecord={canRecord} recording={roomRecording}
                 onRecording={setRoomRecording}
                 onEnd={(outcome) => {
@@ -583,7 +696,7 @@ export default function RoomPage() {
 
       {!joined ? (
         <HardwareCheck
-          session={session} other={other} stream={stream} error={mediaError}
+          session={session} withWhom={withWhom} stream={stream} error={mediaError}
           devices={devices} choice={choice}
           onChoose={(next) => { setChoice(next); void openStream(next); }}
           onJoin={() => void join()}

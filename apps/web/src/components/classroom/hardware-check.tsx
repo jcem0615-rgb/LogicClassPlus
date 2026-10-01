@@ -7,9 +7,10 @@ import type { ClassSession, User } from '@/lib/types';
 
 export interface DeviceChoice { cam: string; mic: string }
 
-export function HardwareCheck({ session, other, stream, error, devices, choice, onChoose, onJoin, onCancel }: {
+export function HardwareCheck({ session, withWhom, stream, error, devices, choice, onChoose, onJoin, onCancel }: {
   session: ClassSession;
-  other: User;
+  /** Who the class is with: one person, or the roster of a group. */
+  withWhom: string;
   stream: MediaStream | null;
   error: string | null;
   devices: { cams: MediaDeviceInfo[]; mics: MediaDeviceInfo[] };
@@ -60,7 +61,7 @@ export function HardwareCheck({ session, other, stream, error, devices, choice, 
             <span className="eyebrow">Before you join</span>
             <h2 className="mt-1 text-[19px]">Check your camera and microphone</h2>
             <p className="mt-1 text-[13px] text-ink-2">
-              {session.topic} · with {other.name} · {session.minutes} minutes
+              {session.topic} · with {withWhom} · {session.minutes} minutes
             </p>
           </div>
           <Pill tone={session.subject === 'math' ? 'math' : 'english'}>

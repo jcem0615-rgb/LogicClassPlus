@@ -5,6 +5,7 @@ import { ALLOWED_ORIGINS } from '../env.js';
 import { prisma } from '../prisma.js';
 import { verifyToken } from '../lib/jwt.js';
 import { publicMessage } from '../lib/serialize.js';
+import { canEnterRoom } from '../lib/sessions.js';
 import * as collab from './collab.js';
 
 interface SocketUser { id: string; role: Role; name: string }
@@ -51,7 +52,11 @@ export function initGateway(server: HttpServer): Server {
 
     socket.on('classroom:leave', (sessionId: string) => {
       void socket.leave(classRoom(sessionId));
-      socket.to(classRoom(sessionId)).emit('classroom:peer-left', { userId: user.id });
+      // The socket id, not just the user id: in a group class the others hold
+      // one peer connection per socket, and need to know which one to drop.
+      socket.to(classRoom(sessionId)).emit('classroom:peer-left', {
+        userId: user.id, socketId: socket.id,
+      });
     });
 
     /* ---------------- WebRTC signalling relay ----------------
@@ -133,7 +138,7 @@ export function initGateway(server: HttpServer): Server {
     socket.on('disconnecting', () => {
       for (const room of socket.rooms) {
         if (!room.startsWith('classroom:')) continue;
-        socket.to(room).emit('classroom:peer-left', { userId: user.id });
+        socket.to(room).emit('classroom:peer-left', { userId: user.id, socketId: socket.id });
         collab.leave(room.slice('classroom:'.length), socket.id);
       }
     });
@@ -154,13 +159,7 @@ export function initGateway(server: HttpServer): Server {
 }
 
 async function canEnter(user: SocketUser, sessionId: string): Promise<boolean> {
-  if (user.role === 'OWNER') return true;
-  const session = await prisma.classSession.findUnique({
-    where: { id: sessionId },
-    select: { teacherId: true, studentId: true },
-  });
-  if (!session) return false;
-  return session.teacherId === user.id || session.studentId === user.id;
+  return canEnterRoom(user, sessionId);
 }
 
 async function peersIn(sessionId: string, exceptSocketId: string) {

@@ -8,12 +8,38 @@ import { Shell } from '@/components/shell';
 import {
   Button, Card, CardHead, Empty, Flag, Modal, StatusPill, Summary, Table, Td, Th,
 } from '@/components/ui';
-import type { Invoice } from '@/lib/types';
+import type { ClassSession, Invoice } from '@/lib/types';
 
 export default function BillingPage() {
   const store = useStore();
   const user = store.user;
   const [paying, setPaying] = useState<Invoice | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  /* Group classes the Owner can still bill. A class is worth showing until
+     every seat in it has an invoice, which the server works out — pressing
+     the button twice bills nobody twice. */
+  const groups = store.sessions
+    .filter((s) => s.capacity > 1 && s.booked > 0 && s.seatPrice != null)
+    .sort((a, b) => new Date(b.startsAt).getTime() - new Date(a.startsAt).getTime());
+
+  async function billClass(session: ClassSession) {
+    setBusy(true);
+    const done = await store.run(() => api.invoiceClass(session.id));
+    if (done) {
+      store.toast(
+        done.invoices.length ? 'ok' : 'warn',
+        done.invoices.length
+          ? `${done.invoices.length} invoice${done.invoices.length === 1 ? '' : 's'} raised`
+          : 'Nothing to invoice',
+        done.skipped
+          ? `${done.skipped} student${done.skipped === 1 ? ' was' : 's were'} already billed for this class.`
+          : `Each seat in “${session.topic}” was billed ${money(session.seatPrice ?? 0)}.`,
+      );
+      await store.refresh();
+    }
+    setBusy(false);
+  }
 
   if (user && user.role === 'teacher') {
     return (
@@ -42,6 +68,33 @@ export default function BillingPage() {
         { k: 'Next due', v: nextDue ? day(nextDue.dueAt) : '—' },
         { k: 'Currency', v: 'USD', s: 'Stripe, card + wallets' },
       ]} />
+
+      {user?.role === 'owner' && groups.length ? (
+        <Card>
+          <CardHead title="Group classes">
+            <span className="text-[13px] text-ink-3">One invoice per seat, at the seat price</span>
+          </CardHead>
+          <Table>
+            <thead><tr><Th>Class</Th><Th>When</Th><Th>Booked</Th><Th>Per seat</Th><Th /></tr></thead>
+            <tbody>
+              {groups.slice(0, 10).map((s) => (
+                <tr key={s.id} className="hover:bg-card-2" data-group-class={s.id}>
+                  <Td className="font-medium">{s.topic}</Td>
+                  <Td className="font-mono text-[13px]">{day(s.startsAt)}</Td>
+                  <Td className="font-mono text-[13px]">{s.booked} / {s.capacity}</Td>
+                  <Td className="font-mono text-[13px]">{money(s.seatPrice ?? 0)}</Td>
+                  <Td>
+                    <Button size="sm" disabled={busy} data-bill={s.id}
+                      onClick={() => void billClass(s)}>
+                      Invoice {s.booked} seat{s.booked === 1 ? '' : 's'}
+                    </Button>
+                  </Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHead title="Invoices" />

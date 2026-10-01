@@ -40,7 +40,8 @@ usersRouter.get('/', asyncRoute(async (req, res) => {
     const children = await childrenOf(me.id);
     const childIds = children.map((c) => c.id);
     const taught = await prisma.classSession.findMany({
-      where: { studentId: { in: childIds } }, select: { teacherId: true }, distinct: ['teacherId'],
+      where: { participants: { some: { studentId: { in: childIds } } } },
+      select: { teacherId: true }, distinct: ['teacherId'],
     });
     const teachers = await prisma.user.findMany({
       where: { id: { in: taught.map((t) => t.teacherId) } }, orderBy: { name: 'asc' },
@@ -49,13 +50,13 @@ usersRouter.get('/', asyncRoute(async (req, res) => {
     return;
   }
 
-  const sessions = await prisma.classSession.findMany({
-    where: { teacherId: me.id }, select: { studentId: true }, distinct: ['studentId'],
+  const seats = await prisma.sessionParticipant.findMany({
+    where: { session: { teacherId: me.id } }, select: { studentId: true }, distinct: ['studentId'],
   });
   const requests = await prisma.classRequest.findMany({
     where: { teacherId: me.id }, select: { studentId: true }, distinct: ['studentId'],
   });
-  const ids = [...new Set([...sessions, ...requests].map((s) => s.studentId))];
+  const ids = [...new Set([...seats, ...requests].map((s) => s.studentId))];
   const students = await prisma.user.findMany({ where: { id: { in: ids } }, orderBy: { name: 'asc' } });
   res.json({ users: [...students, ...owners, me].map(publicUser) });
 }));
