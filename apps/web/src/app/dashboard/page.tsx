@@ -34,9 +34,31 @@ const today = (sessions: ClassSession[]): ClassSession[] => {
     .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
 };
 
+/* A class counts as still to come until a quarter of an hour after its start
+   time — long enough to cover a late join, short enough that yesterday's
+   no-show does not sit at the top of the page forever. */
+const stillToCome = (s: ClassSession): boolean =>
+  s.status === 'scheduled' && new Date(s.startsAt).getTime() > Date.now() - 15 * 60e3;
+
 const nextSession = (sessions: ClassSession[]): ClassSession | undefined => sessions
-  .filter((s) => s.status === 'scheduled' && new Date(s.startsAt).getTime() > Date.now() - 15 * 60e3)
+  .filter(stillToCome)
   .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime())[0];
+
+/* A class is marked live when someone joins and cleared when they leave, so
+   a browser that crashes mid-lesson leaves the record live for good. Believed
+   literally, that would have the dashboard announcing "in class now" for a
+   lesson that ended in August, so the claim expires two hours after the class
+   was due to end. */
+const inProgress = (s: ClassSession): boolean =>
+  s.status === 'live'
+  && Date.now() < new Date(s.startsAt).getTime() + (s.minutes + 120) * 60e3;
+
+/** Classes that have not finished: in progress first, then the ones ahead. */
+const unfinished = (sessions: ClassSession[]): ClassSession[] => [
+  ...sessions.filter(inProgress),
+  ...sessions.filter(stillToCome)
+    .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime()),
+];
 
 function Announcements({ limit }: { limit: number }) {
   const store = useStore();
@@ -293,6 +315,10 @@ function ParentHome() {
     );
   }
 
+  /* "Next class" said "none booked" while the cards below listed four, because
+     a class in progress is not scheduled-in-the-future and fell out of every
+     filter. Both now read the same list, so they cannot disagree. */
+  const live = store.sessions.find(inProgress);
   const next = nextSession(store.sessions);
   const done = store.sessions.filter((s) => s.status === 'completed');
   const open = store.invoices.filter((i) => i.status === 'open');
@@ -302,8 +328,10 @@ function ParentHome() {
     <>
       <Summary items={[
         { k: 'Children', v: children.length, s: children.map((c) => c.name.split(' ')[0]).join(', ') },
-        { k: 'Next class', v: next ? time(next.startsAt) : '—',
-          s: next ? `${day(next.startsAt)} · ${store.userById(next.studentId).name}` : 'none booked' },
+        live
+          ? { k: 'In class now', v: time(live.startsAt), s: store.userById(live.studentId).name }
+          : { k: 'Next class', v: next ? time(next.startsAt) : '—',
+              s: next ? `${day(next.startsAt)} · ${store.userById(next.studentId).name}` : 'none booked' },
         { k: 'Classes finished', v: done.length,
           s: `${(done.reduce((sum, s) => sum + s.minutes, 0) / 60).toFixed(1)}h taught` },
         { k: 'Balance due', v: money(due), s: open.length ? `${open.length} open` : 'nothing owing' },
@@ -311,9 +339,7 @@ function ParentHome() {
 
       {children.map((child) => {
         const theirs = store.sessions.filter((s) => s.studentId === child.id);
-        const upcoming = theirs
-          .filter((s) => s.status === 'scheduled' || s.status === 'live')
-          .slice(0, 4);
+        const upcoming = unfinished(theirs);
         const finished = theirs.filter((s) => s.status === 'completed');
         const missed = theirs.filter((s) => s.status === 'no_show');
 
@@ -328,7 +354,7 @@ function ParentHome() {
                 tone={missed.length ? 'crit' : undefined} />
               <Stat k="Upcoming" v={String(upcoming.length)} />
             </div>
-            {upcoming.length ? upcoming.map((s) => (
+            {upcoming.length ? upcoming.slice(0, 4).map((s) => (
               <TimelineItem key={s.id} session={s} as="owner" />
             )) : (
               <div className="border-t border-line px-[18px] py-3.5 text-[13px] text-ink-3">

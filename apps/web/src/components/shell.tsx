@@ -30,17 +30,27 @@ const Icon = ({ name }: { name: string }) => (
   </span>
 );
 
-interface NavItem { href: string; label: string; icon: string; roles: Role[]; group?: string }
+/* The heading over a group of links reads differently depending on who is
+   looking: "Teaching" is right for a teacher and wrong for the parent paying
+   for the lessons. A string is the same for everyone; a map says who gets
+   what, with `other` covering the roles that are not called out. */
+type GroupLabel = string | (Partial<Record<Role, string>> & { other?: string });
+interface NavItem { href: string; label: string; icon: string; roles: Role[]; group?: GroupLabel }
+
+const groupFor = (group: GroupLabel | undefined, role: Role): string | undefined =>
+  typeof group === 'string' ? group : group ? group[role] ?? group.other : undefined;
 
 const NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: 'home', roles: ['owner', 'teacher', 'student', 'parent'] },
   { href: '/admin', label: 'Admin', icon: 'people', roles: ['owner'], group: 'Manage' },
-  { href: '/classes', label: 'Classes', icon: 'video', roles: ['owner', 'teacher', 'student', 'parent'], group: 'Teaching' },
+  { href: '/classes', label: 'Classes', icon: 'video', roles: ['owner', 'teacher', 'student', 'parent'],
+    group: { teacher: 'Teaching', student: 'Learning', parent: 'My children', other: 'Teaching' } },
   { href: '/library', label: 'Library', icon: 'folder', roles: ['owner', 'teacher', 'student'] },
   { href: '/announcements', label: 'Announcements', icon: 'mega', roles: ['owner', 'teacher', 'student', 'parent'] },
   { href: '/attendance', label: 'Attendance', icon: 'clock', roles: ['owner', 'teacher'], group: 'Money' },
   { href: '/payroll', label: 'Payroll', icon: 'money', roles: ['owner', 'teacher'] },
-  { href: '/billing', label: 'Billing', icon: 'card', roles: ['owner', 'student', 'parent'] },
+  { href: '/billing', label: 'Billing', icon: 'card', roles: ['owner', 'student', 'parent'],
+    group: { student: 'Money', parent: 'Money' } },
   { href: '/settings', label: 'Settings', icon: 'gear', roles: ['owner', 'teacher', 'student', 'parent'], group: 'Account' },
 ];
 
@@ -82,15 +92,16 @@ export function Shell({ title, subtitle, children, bare }: {
 
         <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 pb-3 pt-1 max-[720px]:flex-row max-[720px]:gap-0.5 max-[720px]:p-1.5">
           {items.map((item) => {
-            const showGroup = item.group && !seen.has(item.group);
-            if (item.group) seen.add(item.group);
+            const group = groupFor(item.group, user.role);
+            const showGroup = group && !seen.has(group);
+            if (group) seen.add(group);
             const active = pathname === item.href;
             const count = counts[item.href] ?? 0;
             return (
               <div key={item.href} className="contents">
                 {showGroup ? (
                   <div className="px-2 pb-1.5 pt-3.5 font-mono text-[10px] uppercase tracking-[.11em] text-ink-3 max-[720px]:hidden">
-                    {item.group}
+                    {group}
                   </div>
                 ) : null}
                 <Link

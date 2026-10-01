@@ -376,8 +376,24 @@ await parent.waitForTimeout(2500);
 const parentMain = (await parent.textContent('main')).replace(/\s+/g, ' ');
 ok('a parent sees their child by name',
   /Amira/.test(parentMain) && /Children/.test(parentMain), parentMain.slice(0, 180));
+// The first tile reads "Next class" normally and "In class now" while a
+// child is in one, so either wording counts as the figure being there.
 ok('and the figures that matter to them',
-  /Next class/.test(parentMain) && /Balance due/.test(parentMain));
+  /Next class|In class now/.test(parentMain) && /Balance due/.test(parentMain),
+  parentMain.slice(0, 160));
+
+// Whatever that tile says has to match the cards underneath it: the summary
+// claimed nothing was booked while four classes were listed below.
+const agree = await parent.evaluate(() => {
+  const text = document.querySelector('main').textContent.replace(/\s+/g, ' ');
+  const upcoming = Number(/Upcoming\s*(\d+)/i.exec(text)?.[1] ?? '-1');
+  const rows = document.querySelectorAll('main .border-l-2').length;
+  const quiet = /none booked|Nothing booked/.test(text);
+  return { upcoming, rows, quiet };
+});
+ok('and the headline agrees with the classes listed below it',
+  (agree.upcoming > 0) === (agree.rows > 0) && (agree.upcoming === 0 || !agree.quiet),
+  JSON.stringify(agree));
 
 const parentNav = await parent.$$eval('nav a', (as) => as.map((a) => a.getAttribute('href')));
 ok('a parent gets billing but not payroll, attendance or admin',
