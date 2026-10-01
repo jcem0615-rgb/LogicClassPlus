@@ -40,8 +40,15 @@ export default function LibraryPage() {
   const [creating, setCreating] = useState(false);
   const [detail, setDetail] = useState<{ resource: Resource; url: string | null } | null>(null);
 
-  const folders = store.folders;
-  const folderId = openId ?? folders[0]?.id ?? null;
+  const [subjectFilter, setSubjectFilter] = useState<Subject | 'all'>('all');
+  const folders = useMemo(
+    () => (subjectFilter === 'all'
+      ? store.folders
+      : store.folders.filter((f) => f.subject === subjectFilter)),
+    [store.folders, subjectFilter]);
+  // A filter that hides the open folder has to move the selection with it,
+  // or the file list keeps showing something the sidebar no longer offers.
+  const folderId = folders.some((f) => f.id === openId) ? openId : folders[0]?.id ?? null;
   const resources = useMemo(
     () => store.resources.filter((r) => r.folderId === folderId), [store.resources, folderId]);
   const totalBytes = store.resources.reduce((sum, r) => sum + r.bytes, 0);
@@ -150,6 +157,21 @@ export default function LibraryPage() {
           <CardHead title="Folders">
             {isTeacher ? <Button size="sm" onClick={() => setCreating(true)}>New</Button> : null}
           </CardHead>
+
+          <div data-testid="subject-filter" className="flex gap-0.5 border-b border-line bg-sunk p-[3px]">
+            {([['all', 'All'], ['math', 'Math'], ['english', 'English']] as const).map(([id, label]) => (
+              <button
+                key={id} data-subject={id} onClick={() => setSubjectFilter(id)}
+                className={`flex-1 rounded-[5px] py-1.5 text-[13px] font-medium ${
+                  subjectFilter === id ? 'bg-card text-ink shadow-1' : 'text-ink-2 hover:text-ink'}`}
+              >
+                {label}
+                <span className="ml-1.5 text-ink-3">
+                  {id === 'all' ? store.folders.length : store.folders.filter((f) => f.subject === id).length}
+                </span>
+              </button>
+            ))}
+          </div>
           {folders.length ? folders.map((f) => {
             const count = store.resources.filter((r) => r.folderId === f.id).length;
             return (
@@ -166,7 +188,14 @@ export default function LibraryPage() {
                 <SubjectPill subject={f.subject} />
               </button>
             );
-          }) : <Empty title="No folders" body="Create one to organise your materials." />}
+          }) : (
+            <Empty
+              title={subjectFilter === 'all' ? 'No folders' : `No ${subjectFilter} folders`}
+              body={subjectFilter === 'all'
+                ? 'Create one to organise your materials.'
+                : 'Switch the filter back to All, or create one for this subject.'}
+            />
+          )}
         </Card>
       </div>
 

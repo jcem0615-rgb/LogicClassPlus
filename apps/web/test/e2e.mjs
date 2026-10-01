@@ -279,6 +279,54 @@ ok('one click on a demo row signs that account in',
   /Classes today|Taught this week/.test((await demo.textContent('main')).replace(/\s+/g, ' ')));
 await demo.close();
 
+console.log('\n8. Whiteboard zoom, simpler equations, subject filter');
+const t2 = await open('teacher2');
+await signIn(t2, 'daniel@logicclass.plus', 'teach1234');
+
+// Zoom: the control reports the level, and the board can be zoomed and refit.
+await t2.goto(`${WEB}/room/${sessionId}`, { waitUntil: 'networkidle' });
+await t2.waitForSelector('#hw-join', { timeout: 20_000 });
+await t2.click('#hw-join');
+await t2.waitForTimeout(3000);
+await t2.click('button[data-tab="whiteboard"]');
+await t2.waitForTimeout(800);
+const zoomStart = await t2.textContent('[data-testid=zoom-level]');
+await t2.click('[data-testid=zoom-in]');
+await t2.click('[data-testid=zoom-in]');
+const zoomedIn = await t2.textContent('[data-testid=zoom-level]');
+ok('the whiteboard zooms in', Number(zoomedIn.replace('%','')) > Number(zoomStart.replace('%','')),
+  `${zoomStart} -> ${zoomedIn}`);
+await t2.click('[data-testid=zoom-fit]');
+ok('and Fit returns the whole page', (await t2.textContent('[data-testid=zoom-level]')) === '100%');
+
+// Equations: usable without typing LaTeX, and the source is optional.
+await t2.click('button[data-tab="equations"]');
+await t2.waitForTimeout(900);
+ok('the equation editor opens without a LaTeX box',
+  (await t2.$$eval('#eq-src', (els) => els.length)) === 0);
+await t2.click('button:has-text("Pythagoras")');
+await t2.waitForTimeout(600);
+ok('a named starter renders real notation',
+  (await t2.$$eval('[data-testid=eq-preview] math', (els) => els.length)) > 0);
+await t2.click('[data-testid=eq-source-toggle]');
+await t2.waitForTimeout(400);
+ok('and the LaTeX source is still one click away',
+  (await t2.inputValue('#eq-src')).includes('a^{2}'));
+
+// Subject filter on the library.
+await t2.goto(`${WEB}/library`, { waitUntil: 'networkidle' });
+await t2.waitForTimeout(1500);
+const allFolders = await t2.$$eval('[data-testid=subject-filter] ~ button', (els) => els.length);
+await t2.click('[data-subject="math"]');
+await t2.waitForTimeout(600);
+const mathFolders = await t2.$$eval('[data-testid=subject-filter] ~ button', (els) => els.length);
+const mathText = (await t2.textContent('[data-testid=subject-filter] ~ button')) || '';
+ok('the library filters folders by subject',
+  mathFolders > 0 && mathFolders <= allFolders, `all ${allFolders}, math ${mathFolders}`);
+ok('and the filtered list only shows that subject',
+  !/english/i.test(mathText), mathText.slice(0, 80));
+await t2.close();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');
 await browser.close();
