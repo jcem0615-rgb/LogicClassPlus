@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { ALLOWED_EXTENSIONS, env, isS3Configured } from '../env.js';
@@ -72,3 +72,43 @@ export async function createDownloadUrl(storageKey: string): Promise<string | nu
     expiresIn: 300,
   });
 }
+
+/**
+ * A link to a file this API is holding on its own disk.
+ *
+ * Without a bucket there was no link at all: the dialog said the bytes were
+ * "on the server's local disk" and offered no way to reach them, so every
+ * file in the library was unopenable on any installation without S3 — which
+ * is every installation that has not paid for one.
+ *
+ * It cannot be an ordinary authenticated route, because the thing that opens
+ * it is an <a href>, a new tab, or whatever application the person hands the
+ * link to, and none of those send an Authorization header. So the URL
+ * carries its own permission: an HMAC over the resource id and an expiry,
+ * signed with the server's secret. The same shape as the presigned URL it
+ * stands in for.
+ */
+const FILE_TOKEN_TTL_SECONDS = 15 * 60;
+
+export function signFileToken(resourceId: string, now = Date.now()): string {
+  const expires = Math.floor(now / 1000) + FILE_TOKEN_TTL_SECONDS;
+  const signature = createHmac('sha256', env.JWT_SECRET)
+    .update(`${resourceId}.${expires}`)
+    .digest('base64url');
+  return `${expires}.${signature}`;
+}
+
+export function verifyFileToken(resourceId: string, token: string): boolean {
+  const [expiresRaw, signature] = token.split('.');
+  const expires = Number(expiresRaw);
+  if (!expires || !signature) return false;
+  if (expires * 1000 < Date.now()) return false;
+  const expected = createHmac('sha256', env.JWT_SECRET)
+    .update(`${resourceId}.${expires}`)
+    .digest('base64url');
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export const fileTokenTtlSeconds = FILE_TOKEN_TTL_SECONDS;

@@ -10,13 +10,20 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useStore } from '@/lib/store';
-import { ago, day, money } from '@/lib/format';
+import { ago, day, money, time } from '@/lib/format';
 import { Shell } from '@/components/shell';
 import {
   Avatar, Button, Card, CardHead, Empty, Field, Flag, Modal, Pill, StatusPill,
   SubjectPill, Summary, Table, Td, Th,
 } from '@/components/ui';
 import type { Invitation, Subject, User } from '@/lib/types';
+
+/** Midnight this morning, in the viewer's own timezone. */
+function startOfToday(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
 
 export default function AdminPage() {
   const store = useStore();
@@ -70,6 +77,8 @@ export default function AdminPage() {
           ))}
         </Card>
       ) : null}
+
+      <ClassMonitor />
 
       <InviteCard />
 
@@ -221,6 +230,123 @@ export default function AdminPage() {
         />
       ) : null}
     </Shell>
+  );
+}
+
+/**
+ * Every class on the platform, and what actually happened in it.
+ *
+ * The Owner could see a count of sessions and nothing else: not who taught
+ * which one, not who sat in it, not whether it started when it was meant to
+ * or ran over. Those are the questions asked when a parent complains, when
+ * payroll looks wrong, or when someone wants to know whether a class
+ * happened at all — so they are the columns.
+ */
+function ClassMonitor() {
+  const store = useStore();
+  const [when, setWhen] = useState<'today' | 'week' | 'all'>('week');
+  const [who, setWho] = useState('');
+
+  const since = when === 'today' ? startOfToday()
+    : when === 'week' ? Date.now() - 7 * 86_400_000
+      : 0;
+
+  const rows = [...store.sessions]
+    .filter((s) => new Date(s.startsAt).getTime() >= since)
+    .filter((s) => {
+      if (!who) return true;
+      const names = [store.userById(s.teacherId).name, ...s.studentIds.map((id) => store.userById(id).name)];
+      return names.some((n) => n.toLowerCase().includes(who.toLowerCase()))
+        || s.topic.toLowerCase().includes(who.toLowerCase());
+    })
+    .sort((a, b) => new Date(b.startsAt).getTime() - new Date(a.startsAt).getTime());
+
+  const live = rows.filter((s) => s.status === 'live');
+  const taught = rows.filter((s) => s.status === 'completed');
+  const missed = rows.filter((s) => s.status === 'no_show');
+
+  return (
+    <Card>
+      <CardHead title="Classes">
+        <span className="text-[13px] text-ink-3">
+          {live.length ? `${live.length} in progress · ` : ''}
+          {taught.length} finished · {missed.length} missed
+        </span>
+      </CardHead>
+
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-[18px] py-3">
+        {([['today', 'Today'], ['week', 'Last 7 days'], ['all', 'Everything']] as const).map(([id, label]) => (
+          <Button key={id} size="sm" variant={when === id ? 'primary' : 'default'}
+            data-range={id} onClick={() => setWhen(id)}>{label}</Button>
+        ))}
+        <input
+          value={who} onChange={(e) => setWho(e.target.value)} id="class-search"
+          placeholder="Filter by teacher, student or topic"
+          className="ml-auto w-[260px] max-w-full"
+        />
+      </div>
+
+      {rows.length ? (
+        <Table>
+          <thead>
+            <tr>
+              <Th>Date</Th><Th>Started</Th><Th>Ended</Th><Th>Length</Th>
+              <Th>Teacher</Th><Th>Students</Th><Th>Class</Th><Th>Status</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.slice(0, 60).map((s) => {
+              const started = s.joinedAt ? new Date(s.joinedAt) : null;
+              const ended = s.endedAt ? new Date(s.endedAt) : null;
+              const ran = started && ended
+                ? Math.round((ended.getTime() - started.getTime()) / 60000)
+                : null;
+              const lateBy = started
+                ? Math.round((started.getTime() - new Date(s.startsAt).getTime()) / 60000)
+                : null;
+              return (
+                <tr key={s.id} className="hover:bg-card-2" data-class-row={s.id}>
+                  <Td className="font-mono text-[13px]">{day(s.startsAt)}</Td>
+                  <Td className="font-mono text-[13px]">
+                    {started ? time(started.toISOString()) : <span className="text-ink-3">—</span>}
+                    {/* Scheduled against actual: a class that began late is
+                        the thing an attendance dispute turns on. */}
+                    {lateBy != null && lateBy > 2 ? (
+                      <span className="block text-[11px] text-warn">{lateBy} min late</span>
+                    ) : null}
+                  </Td>
+                  <Td className="font-mono text-[13px]">
+                    {ended ? time(ended.toISOString())
+                      : s.status === 'live' ? <span className="text-ok">in progress</span>
+                        : <span className="text-ink-3">—</span>}
+                  </Td>
+                  <Td className="font-mono text-[13px]">
+                    {ran != null ? `${ran} min` : `${s.minutes} min booked`}
+                  </Td>
+                  <Td className="text-[13px]">{store.userById(s.teacherId).name}</Td>
+                  <Td className="text-[13px]">
+                    {s.studentIds.length
+                      ? s.studentIds.map((id) => store.userById(id).name).join(', ')
+                      : <span className="text-ink-3">nobody booked</span>}
+                    {s.capacity > 1 ? (
+                      <span className="block text-[11px] text-ink-3">
+                        group · {s.booked} of {s.capacity} seats
+                        {s.attendedIds.length ? ` · ${s.attendedIds.length} turned up` : ''}
+                      </span>
+                    ) : null}
+                  </Td>
+                  <Td className="text-[13px]">{s.topic}</Td>
+                  <Td><StatusPill status={s.status} /></Td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </Table>
+      ) : (
+        <Empty title="No classes in that range"
+          body="Widen the range, or clear the filter." />
+      )}
+    </Card>
   );
 }
 

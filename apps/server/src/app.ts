@@ -10,7 +10,7 @@ import { attachUser } from './middleware/auth.js';
 import { authRouter } from './routes/auth.js';
 import { invitationsRouter } from './routes/invitations.js';
 import { usersRouter } from './routes/users.js';
-import { libraryRouter } from './routes/library.js';
+import { libraryFilesRouter, libraryRouter } from './routes/library.js';
 import { announcementsRouter } from './routes/announcements.js';
 import { classesRouter } from './routes/classes.js';
 import { attendanceRouter } from './routes/attendance.js';
@@ -71,6 +71,8 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/invitations', invitationsRouter);
   app.use('/api/users', usersRouter);
+  // Before the authenticated router: these links carry their own signature.
+  app.use('/api/library/files', libraryFilesRouter);
   app.use('/api/library', libraryRouter);
   app.use('/api/announcements', announcementsRouter);
   app.use('/api/classes', classesRouter);

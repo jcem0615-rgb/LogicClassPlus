@@ -915,6 +915,130 @@ ok('a withdrawn link says so instead of making an account',
 await withdrawn.close();
 await admin2.close();
 
+console.log('\n14. The library: saved as PDF, and openable');
+
+const lib = await open('library-teacher');
+await signIn(lib, 'daniel@logicclass.plus', 'teach1234');
+
+// Save the whiteboard from a real classroom, the way a teacher does.
+const libSession = await lib.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/classes/sessions`, { headers: { authorization: `Bearer ${token}` } });
+  const { sessions } = await r.json();
+  return (sessions.find((s) => s.status === 'scheduled') ?? sessions[0]).id;
+}, API);
+await lib.goto(`${WEB}/room/${libSession}`, { waitUntil: 'networkidle' });
+await lib.waitForSelector('#hw-join', { timeout: 20_000 });
+await lib.click('#hw-join');
+await lib.waitForTimeout(3000);
+
+const board = await lib.locator('canvas').first().boundingBox();
+await lib.mouse.move(board.x + 80, board.y + 90);
+await lib.mouse.down();
+await lib.mouse.move(board.x + 260, board.y + 220, { steps: 8 });
+await lib.mouse.up();
+await lib.waitForTimeout(600);
+await lib.click('button:has-text("Save to library")');
+await lib.waitForTimeout(4000);
+
+const saved = await lib.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const auth = { authorization: `Bearer ${token}` };
+  const { folders } = await (await fetch(`${api}/api/library/folders`, { headers: auth })).json();
+  const all = [];
+  for (const f of folders) {
+    const { resources } = await (await fetch(`${api}/api/library/folders/${f.id}/resources`, { headers: auth })).json();
+    all.push(...resources);
+  }
+  return [...all].sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))[0];
+}, API);
+ok('a saved board is filed as a PDF, not an image',
+  saved?.ext === 'pdf' && saved.bytes > 1000, JSON.stringify(saved && { name: saved.name, ext: saved.ext, bytes: saved.bytes }));
+
+// The teacher who saved it must be able to read it back.
+await lib.goto(`${WEB}/library`, { waitUntil: 'networkidle' });
+await lib.waitForTimeout(2500);
+ok('a teacher has a way to open their own files',
+  await lib.locator(`[data-open="${saved.id}"]`).count() === 1);
+await lib.click(`[data-open="${saved.id}"]`);
+await lib.waitForSelector('#open-file', { timeout: 15_000 });
+const fileUrl = await lib.getAttribute('#open-file', 'href');
+ok('and a link to open it with', Boolean(fileUrl), String(fileUrl));
+
+// Fetch it the way an outside application would: no cookies, no headers.
+const fetched = await fetch(fileUrl);
+const body = Buffer.from(await fetched.arrayBuffer());
+ok('the link serves the file to anything that opens it',
+  fetched.status === 200 && fetched.headers.get('content-type')?.includes('application/pdf'),
+  `${fetched.status} ${fetched.headers.get('content-type')}`);
+ok('and what comes back is a PDF', body.subarray(0, 5).toString() === '%PDF-', body.subarray(0, 8).toString());
+ok('served for viewing rather than forced to download',
+  /inline/.test(fetched.headers.get('content-disposition') ?? ''),
+  fetched.headers.get('content-disposition') ?? '');
+
+// Parse it with a reader that did not write it.
+const { getDocument } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+const doc = await getDocument({ data: new Uint8Array(body), useSystemFonts: false }).promise;
+const page = await doc.getPage(1);
+const size = page.getViewport({ scale: 1 });
+ok('pdf.js opens it as a one-page A4 document',
+  doc.numPages === 1 && Math.round(size.width) === 595 && Math.round(size.height) === 842,
+  JSON.stringify({ pages: doc.numPages, w: Math.round(size.width), h: Math.round(size.height) }));
+const ops = await page.getOperatorList();
+ok('with the board drawn on it', ops.fnArray.length > 0, `ops: ${ops.fnArray.length}`);
+
+// A tampered or stale signature is refused.
+const tampered = await fetch(fileUrl.replace(/t=[^&]+/, 't=9999999999.forged'));
+ok('a forged link is refused', tampered.status === 403, String(tampered.status));
+const noToken = await fetch(fileUrl.split('?')[0]);
+ok('and so is one with no signature at all', noToken.status === 403, String(noToken.status));
+
+await lib.close();
+
+console.log('\n15. The owner can see what happened in a class');
+
+const watcher = await open('class-monitor');
+await signIn(watcher, 'owner@logicclass.plus', 'admin1234');
+await watcher.goto(`${WEB}/admin`, { waitUntil: 'networkidle' });
+await watcher.waitForSelector('#class-search', { timeout: 15_000 });
+await watcher.click('[data-range=all]');
+await watcher.waitForTimeout(1500);
+
+const header = (await watcher.textContent('table')).replace(/\s+/g, ' ');
+ok('the table says when, who and what for every class',
+  ['Date', 'Started', 'Ended', 'Length', 'Teacher', 'Students', 'Class', 'Status']
+    .every((h) => header.includes(h)), header.slice(0, 160));
+
+const anyRow = await watcher.evaluate(() => {
+  const row = document.querySelector('[data-class-row]');
+  return row ? row.textContent.replace(/\s+/g, ' ') : null;
+});
+ok('a finished class shows a real start and end, not just its booking',
+  await watcher.evaluate(() => [...document.querySelectorAll('[data-class-row]')]
+    .some((r) => /\d{2}:\d{2}/.test(r.textContent) && /min/.test(r.textContent))),
+  String(anyRow).slice(0, 180));
+
+ok('and names the teacher and the students in it',
+  await watcher.evaluate(() => [...document.querySelectorAll('[data-class-row]')]
+    .some((r) => /Daniel Okafor|Hana/.test(r.textContent)
+      && /Amira|Kenji|Luc[ií]a/.test(r.textContent))));
+
+ok('a group class says how many seats were taken and how many turned up',
+  await watcher.evaluate(() => [...document.querySelectorAll('[data-class-row]')]
+    .some((r) => /group ·/.test(r.textContent))));
+
+// Filtering is the point of a monitor: find one class among hundreds.
+const rowsAll = await watcher.locator('[data-class-row]').count();
+await watcher.fill('#class-search', 'Kenji');
+await watcher.waitForTimeout(1200);
+const rowsFiltered = await watcher.locator('[data-class-row]').count();
+ok('filtering narrows it to one person',
+  rowsFiltered > 0 && rowsFiltered < rowsAll, `${rowsAll} -> ${rowsFiltered}`);
+const filtered = await watcher.evaluate(() => [...document.querySelectorAll('[data-class-row]')]
+  .every((r) => /Kenji/.test(r.textContent)));
+ok('and every row left is theirs', filtered);
+await watcher.close();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');
 await browser.close();

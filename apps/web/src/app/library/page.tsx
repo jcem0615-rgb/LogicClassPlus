@@ -130,17 +130,25 @@ export default function LibraryPage() {
                     <Td className="font-mono text-[13px] text-ink-3">{ago(r.uploadedAt)}</Td>
                     {user?.role === 'owner' ? <Td className="text-[13px]">{store.userById(r.teacherId).name}</Td> : null}
                     <Td className="text-right">
-                      {isTeacher ? (
-                        <Button size="sm" variant="ghost" onClick={() => {
-                          void store.run(() => api.deleteResource(r.id));
-                        }}>Delete</Button>
-                      ) : (
-                        <Button size="sm" variant="ghost" onClick={() => {
+                      {/* Everyone who can see a file can open it. A teacher
+                          used to get Delete and nothing else, so the one
+                          person who put the file there could not read it
+                          back. */}
+                      <span className="flex justify-end gap-1.5">
+                        <Button size="sm" data-open={r.id} onClick={() => {
                           void api.resourceUrl(r.id)
                             .then((res) => setDetail({ resource: r, url: res.url }))
-                            .catch(() => setDetail({ resource: r, url: null }));
+                            .catch((err: Error) => {
+                              setDetail({ resource: r, url: null });
+                              store.toast('err', 'Could not open that file', err.message);
+                            });
                         }}>Open</Button>
-                      )}
+                        {isTeacher || user?.role === 'owner' ? (
+                          <Button size="sm" variant="ghost" onClick={() => {
+                            void store.run(() => api.deleteResource(r.id));
+                          }}>Delete</Button>
+                        ) : null}
+                      </span>
                     </Td>
                   </tr>
                 ))}
@@ -227,12 +235,32 @@ export default function LibraryPage() {
             ))}
           </div>
           {detail.url ? (
-            <a href={detail.url} target="_blank" rel="noopener noreferrer">
-              <Button variant="primary">Open file</Button>
-            </a>
+            <>
+              <div className="flex flex-wrap gap-2">
+                {/* A plain link, so it opens in whatever the person uses —
+                    the browser's reader, or an app they hand it to. */}
+                <a href={detail.url} target="_blank" rel="noopener noreferrer" id="open-file">
+                  <Button variant="primary">Open file</Button>
+                </a>
+                <a href={detail.url} download={detail.resource.name} id="download-file">
+                  <Button>Download</Button>
+                </a>
+                <Button onClick={() => {
+                  void navigator.clipboard?.writeText(detail.url!)
+                    .then(() => store.toast('ok', 'Link copied',
+                      'It works for fifteen minutes, for this file only.'))
+                    .catch(() => undefined);
+                }}>Copy link</Button>
+              </div>
+              <p className="text-[13px] text-ink-3">
+                The link is signed and expires in fifteen minutes. Open it in any application you
+                like — nothing about it is tied to this browser.
+              </p>
+            </>
           ) : (
-            <p className="text-[13px] text-ink-3">
-              No object storage is configured on the server, so the bytes are on its local disk.
+            <p className="text-[13px] text-crit">
+              This file could not be opened. Ask the administrator to check that the server still
+              has it.
             </p>
           )}
         </Modal>

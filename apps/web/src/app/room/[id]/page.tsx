@@ -16,6 +16,7 @@ import { useStore } from '@/lib/store';
 import { emit, on, socketId } from '@/lib/socket';
 import { PeerConnection, type SignalMessage } from '@/lib/webrtc';
 import { SfuSession } from '@/lib/sfu';
+import { canvasToPdf } from '@/lib/pdf';
 import {
   deviceSpace, listDeviceRecordings, readDeviceRecording, discardDeviceRecording,
   saveBlob, startDeviceRecording, estimatedBytesFor,
@@ -495,6 +496,14 @@ export default function RoomPage() {
     if (session) emit('classroom:board:stroke', { sessionId: session.id, stroke });
   }
 
+  /**
+   * File the board into the library, as a PDF.
+   *
+   * It used to save a JPEG, which is fine to look at and wrong for
+   * everything else: it has no paper size to print at, the usual annotation
+   * tools will not touch it, and a parent asked to open "the worksheet" gets
+   * an image. A PDF opens in whatever reader the person already uses.
+   */
   async function saveBoard(canvas: HTMLCanvasElement, name: string) {
     if (!session || !isTeacher) {
       store.toast('warn', 'Teacher only', 'Only the teacher can file material into the library.');
@@ -505,31 +514,34 @@ export default function RoomPage() {
       store.toast('warn', 'No folder yet', 'Create a folder in the Library first.');
       return;
     }
-    canvas.toBlob((blob) => {
-      if (!blob) return;
-      const file = new File([blob], `${name}-${new Date().toISOString().slice(0, 10)}.jpg`,
-        { type: 'image/jpeg' });
-      void store.run(async () => {
-        const { ticket } = await api.uploadTicket({
-          folderId: folder.id, filename: file.name, bytes: file.size, mimeType: file.type });
-        if (ticket.driver === 's3' && ticket.uploadUrl) {
-          await fetch(ticket.uploadUrl, { method: 'PUT', body: file, headers: { 'content-type': file.type } });
-        } else {
-          const base64 = await new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onload = () => {
-              const result = String(reader.result ?? '');
-              resolve(result.slice(result.indexOf(',') + 1));
-            };
-            reader.readAsDataURL(file);
-          });
-          await api.uploadLocal(ticket.storageKey, base64);
-        }
-        return api.commitResource({
-          folderId: folder.id, filename: file.name, bytes: file.size,
-          storageKey: ticket.storageKey, mimeType: file.type });
-      }, { title: 'Saved to library', body: `${bytes(file.size)} filed under “${folder.name}”.` });
-    }, 'image/jpeg', 0.7);
+
+    const pdf = await canvasToPdf(canvas, {
+      title: `${session.topic} — ${name}`,
+      caption: `${session.topic} · ${name} · ${new Date().toLocaleString()}`,
+    });
+    const file = new File([pdf], `${name}-${new Date().toISOString().slice(0, 10)}.pdf`,
+      { type: 'application/pdf' });
+
+    void store.run(async () => {
+      const { ticket } = await api.uploadTicket({
+        folderId: folder.id, filename: file.name, bytes: file.size, mimeType: file.type });
+      if (ticket.driver === 's3' && ticket.uploadUrl) {
+        await fetch(ticket.uploadUrl, { method: 'PUT', body: file, headers: { 'content-type': file.type } });
+      } else {
+        const base64 = await new Promise<string>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = String(reader.result ?? '');
+            resolve(result.slice(result.indexOf(',') + 1));
+          };
+          reader.readAsDataURL(file);
+        });
+        await api.uploadLocal(ticket.storageKey, base64);
+      }
+      return api.commitResource({
+        folderId: folder.id, filename: file.name, bytes: file.size,
+        storageKey: ticket.storageKey, mimeType: file.type });
+    }, { title: 'Saved to library as a PDF', body: `${bytes(file.size)} filed under “${folder.name}”.` });
   }
 
   /**
