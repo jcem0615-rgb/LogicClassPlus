@@ -16,6 +16,11 @@ import { useStore } from '@/lib/store';
 import { emit, on, socketId } from '@/lib/socket';
 import { PeerConnection, type SignalMessage } from '@/lib/webrtc';
 import { SfuSession } from '@/lib/sfu';
+import {
+  deviceSpace, listDeviceRecordings, readDeviceRecording, discardDeviceRecording,
+  saveBlob, startDeviceRecording, estimatedBytesFor,
+  type DeviceRecording, type DeviceRecordingMeta,
+} from '@/lib/device-recording';
 import { bytes, duration, initials, time } from '@/lib/format';
 import { Shell } from '@/components/shell';
 import { Button, Card, Empty, Pill } from '@/components/ui';
@@ -116,6 +121,17 @@ export default function RoomPage() {
   const [remotes, setRemotes] = useState<Remote[]>([]);
   const [roomRecording, setRoomRecording] = useState(false);
   const [localRecording, setLocalRecording] = useState(false);
+  const [recordedBytes, setRecordedBytes] = useState(0);
+  /** The server's ceiling, so a device recording stops where a hosted one would. */
+  const [recordingCap, setRecordingCap] = useState(180);
+  const [orphans, setOrphans] = useState<DeviceRecordingMeta[]>([]);
+  /* Firefox and Safari have no save dialog, so the second button is simply
+     not offered there rather than offered and then failing. */
+  const [canWriteFiles, setCanWriteFiles] = useState(false);
+  useEffect(() => {
+    setCanWriteFiles(typeof (window as unknown as { showSaveFilePicker?: unknown })
+      .showSaveFilePicker === 'function');
+  }, []);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [strokes, setStrokes] = useState<Stroke[]>([]);
@@ -126,12 +142,13 @@ export default function RoomPage() {
      map of one; the code does not need to know which kind of class it is. */
   const peers = useRef(new Map<string, PeerConnection>());
   const sfu = useRef<SfuSession | null>(null);
-  const localRecorder = useRef<MediaRecorder | null>(null);
+  const deviceRecorder = useRef<DeviceRecording | null>(null);
   const chatLog = useRef<HTMLDivElement>(null);
 
   const me = store.user;
   const isTeacher = Boolean(me && session && me.id === session.teacherId);
   const group = Boolean(session && session.capacity > 1);
+  const canRecordHere = isTeacher || me?.role === 'owner';
   /* Who the chat box and the empty-room caption talk about. In a group there
      is no "the other person", so it addresses the class instead. */
   const audience = !session ? 'the class'
@@ -277,6 +294,22 @@ export default function RoomPage() {
     return () => { alive = false; };
   }, []);
 
+  /* ---------- the device's own recordings ---------- */
+  useEffect(() => {
+    void api.recordingEstimate(session?.minutes ?? 60)
+      .then((e) => setRecordingCap(e.maxMinutes))
+      .catch(() => undefined);
+  }, [session?.minutes]);
+
+  // A tab that died mid-recording left its chunks in the browser's store.
+  // They are still a playable file up to the moment it went.
+  useEffect(() => {
+    if (!session) return;
+    void listDeviceRecordings(session.id)
+      .then((all) => setOrphans(all.filter((r) => !r.complete)))
+      .catch(() => undefined);
+  }, [session]);
+
   /* ---------- room events ---------- */
   useEffect(() => {
     if (!joined || !session) return undefined;
@@ -305,16 +338,28 @@ export default function RoomPage() {
       // An older server sends only the user id; drop every socket they hold.
       remotes.filter((r) => r.userId === info.userId).forEach((r) => dropRemote(r.key));
     });
-    const offRecording = on<{ status: string; bytes?: number }>('classroom:recording', (info) => {
-      if (info.status === 'started') {
-        setRoomRecording(true);
-        store.toast('warn', 'This class is being recorded',
-          'Both participants are told whenever recording starts.');
-      } else if (info.status === 'ready') {
-        setRoomRecording(false);
-        store.toast('ok', 'Recording saved', `${bytes(info.bytes ?? 0)} uploaded by the media server.`);
-      } else setRoomRecording(false);
-    });
+    const offRecording = on<{ status: string; bytes?: number; device?: boolean; by?: string }>(
+      'classroom:recording', (info) => {
+        if (info.status === 'started') {
+          setRoomRecording(true);
+          store.toast('warn', 'This class is being recorded',
+            info.device
+              ? `${info.by ?? 'Someone'} is recording the class on their own device.`
+              : 'Everyone in the class is told whenever recording starts.');
+        } else if (info.status === 'ready') {
+          setRoomRecording(false);
+          store.toast('ok', 'Recording saved', `${bytes(info.bytes ?? 0)} uploaded by the media server.`);
+        } else {
+          setRoomRecording(false);
+          // Knowing when it stopped matters as much as knowing when it
+          // started: it is the difference between "watch what you say" and
+          // "we are off the record now".
+          if (info.device) {
+            store.toast('ok', 'Recording stopped',
+              `${info.by ?? 'They'} stopped recording the class.`);
+          }
+        }
+      });
 
     return () => {
       offMessage(); offStroke(); offClear(); offSignal(); offJoined(); offLeft(); offRecording();
@@ -403,7 +448,8 @@ export default function RoomPage() {
     sfu.current = null;
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
-    if (localRecorder.current?.state === 'recording') localRecorder.current.stop();
+    void deviceRecorder.current?.stop();
+    deviceRecorder.current = null;
     if (session) { emit('classroom:leave', session.id); void api.leaveSession(session.id); }
   }, [session]);
 
@@ -467,95 +513,89 @@ export default function RoomPage() {
   }
 
   /**
-   * Record my own camera and microphone to a file.
+   * Record the class, on this device.
    *
-   * This used to hand MediaRecorder no timeslice and push every blob into an
-   * array, which meant the entire recording sat in the tab's memory until it
-   * stopped — around two gigabytes for a three-hour class, long past where a
-   * browser gives up. It also built the file and then dropped it on the
-   * floor: a toast said the clip was ready and there was no way to get it.
+   * The media-server path composites the room on a server and uploads the
+   * file to a bucket; this one composites it here and keeps it here. Every
+   * stream in the room is already decoded in this tab, so the only thing the
+   * server was adding was somewhere to put the result — and the teacher's
+   * own disk is somewhere to put the result.
    *
-   * Now it asks for a file up front and streams five-second chunks into it,
-   * so memory stays flat however long the class runs. Where the File System
-   * Access API is missing (Firefox, Safari) it keeps the chunks in memory and
-   * downloads them at the end, which is the old behaviour minus the hoarding:
-   * it stops at a ceiling and says so rather than taking the tab down.
+   * Chunks are written out as they are produced, into a file the teacher
+   * picked or into the browser's on-disk store, so a three-hour class costs
+   * a few megabytes of memory instead of two gigabytes of it.
    */
-  async function toggleLocalRecording() {
-    if (localRecorder.current?.state === 'recording') { localRecorder.current.stop(); return; }
-    if (!stream || typeof MediaRecorder === 'undefined') {
-      store.toast('err', 'Nothing to record', 'Recording needs an active camera or microphone.');
+  async function toggleDeviceRecording(target: 'device' | 'file' = 'device') {
+    if (deviceRecorder.current) {
+      const handle = deviceRecorder.current;
+      deviceRecorder.current = null;
+      const result = await handle.stop();
+      setLocalRecording(false);
+      setRecordedBytes(0);
+      emit('classroom:recording:device', { sessionId: session?.id, active: false });
+
+      if (result.blob) {
+        saveBlob(result.blob, result.filename);
+        store.toast('ok', 'Recording saved to this device',
+          `${bytes(result.bytes)} over ${duration(result.seconds * 1000)}. `
+          + 'It was kept in this browser as the class ran and has now been downloaded.');
+      } else {
+        store.toast('ok', 'Recording saved', `${bytes(result.bytes)} written to the file you chose.`);
+      }
       return;
     }
 
-    const name = `${session?.topic ?? 'class'} ${new Date().toISOString().slice(0, 16)}.webm`
-      .replace(/[\\/:*?"<>|]/g, '-');
-    const picker = (window as unknown as {
-      showSaveFilePicker?: (o: unknown) => Promise<FileSystemFileHandle>;
-    }).showSaveFilePicker;
-
-    let writer: FileSystemWritableFileStream | null = null;
-    if (picker) {
-      try {
-        const handle = await picker({
-          suggestedName: name,
-          types: [{ description: 'WebM video', accept: { 'video/webm': ['.webm'] } }],
-        });
-        writer = await handle.createWritable();
-      } catch {
-        return;   // the save dialog was dismissed; recording never started
-      }
+    if (!session) return;
+    if (!stream && remotes.every((r) => !r.stream)) {
+      store.toast('err', 'Nothing to record', 'Recording needs at least one camera in the room.');
+      return;
     }
 
-    const rec = new MediaRecorder(stream);
-    const chunks: Blob[] = [];
-    let written = 0;
-    /* Only reached without a file handle. Half a gigabyte is roughly forty
-       minutes at this bitrate — enough to be useful, low enough that the tab
-       survives it. */
-    const MEMORY_CEILING = 500e6;
-    let queue: Promise<void> = Promise.resolve();
+    const space = await deviceSpace();
+    const needed = estimatedBytesFor(session.minutes);
+    if (space.free != null && space.free < needed) {
+      store.toast('warn', 'This device may not have room',
+        `About ${bytes(needed)} is needed for ${session.minutes} minutes and roughly `
+        + `${bytes(space.free)} is free. Choose a file on a bigger disk, or record a shorter stretch.`);
+    }
 
-    localRecorder.current = rec;
-    rec.ondataavailable = (e) => {
-      if (!e.data.size) return;
-      written += e.data.size;
-      if (writer) {
-        // Serialised: WritableStream rejects a second write while one is
-        // still in flight, and chunks arrive faster than the disk at 1080p.
-        queue = queue.then(() => writer!.write(e.data)).catch(() => undefined);
-        return;
-      }
-      chunks.push(e.data);
-      if (written > MEMORY_CEILING && rec.state === 'recording') {
-        store.toast('warn', 'Local recording stopped at 500 MB',
-          'This browser cannot stream a recording to disk, so it is kept in memory. '
-          + 'Use the class recording for a full-length copy.');
-        rec.stop();
-      }
-    };
-    rec.onstop = () => {
-      setLocalRecording(false);
-      if (writer) {
-        void queue.then(() => writer!.close()).then(() => {
-          store.toast('ok', 'Local recording saved', `${bytes(written)} written to the file you chose.`);
-        }).catch((err: Error) => {
-          store.toast('err', 'Could not finish the file', err.message);
-        });
-        return;
-      }
-      const blob = new Blob(chunks, { type: rec.mimeType || 'video/webm' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = name;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-      store.toast('ok', 'Local clip downloaded', `${bytes(blob.size)} of your own tracks.`);
-    };
-    // Five-second chunks: without a timeslice nothing is handed over until
-    // the recording ends, which is the whole problem.
-    rec.start(5_000);
-    setLocalRecording(true);
+    try {
+      const handle = await startDeviceRecording({
+        sessionId: session.id,
+        label: session.topic,
+        target,
+        maxMinutes: recordingCap,
+        participants: () => [
+          ...(streamRef.current ? [{ name: `${me?.name ?? 'Me'} (you)`, stream: streamRef.current }] : []),
+          ...remotes.filter((r) => r.stream).map((r) => ({
+            name: r.name !== 'Joining…' ? r.name : store.userById(r.userId).name,
+            stream: r.stream!,
+          })),
+        ],
+        onProgress: ({ bytes: written }) => setRecordedBytes(written),
+        onStopped: (reason, err) => {
+          setLocalRecording(false);
+          if (reason === 'limit') {
+            store.toast('warn', `Recording stopped after ${recordingCap} minutes`,
+              'That is the limit for one recording. Start another if the class is still going.');
+          } else if (reason === 'error') {
+            store.toast('err', 'Recording stopped', err?.message ?? 'The device stopped accepting data.');
+          }
+        },
+      });
+      deviceRecorder.current = handle;
+      setLocalRecording(true);
+      // Everyone in the room is told, every time, whoever is recording and
+      // wherever the file ends up.
+      emit('classroom:recording:device', { sessionId: session.id, active: true });
+      store.toast('ok', 'Recording on this device',
+        handle.where === 'file'
+          ? 'Writing straight to the file you chose.'
+          : 'Kept in this browser as it goes, and saved to your downloads when you stop.');
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') return;   // the save dialog was dismissed
+      store.toast('err', 'Could not start recording', (err as Error).message);
+    }
   }
 
   /* ---------- render ---------- */
@@ -655,13 +695,61 @@ export default function RoomPage() {
                 stream?.getVideoTracks().forEach((t) => { t.enabled = next; });
                 sfu.current?.setEnabled('video', next);
               }}>{camOn ? 'Camera off' : 'Camera on'}</Button>
-              <Button size="sm" variant={localRecording ? 'danger' : 'default'}
-                title="Records only your own camera and microphone, in this tab"
-                onClick={() => void toggleLocalRecording()}>{localRecording ? 'Stop' : 'Record me'}</Button>
+              {/* Recording the class captures everyone in it, so it is the
+                  teacher's to start — the same rule the hosted recording
+                  follows. Everybody is told either way. */}
+              {canRecordHere ? (
+                <>
+                  <Button size="sm" variant={localRecording ? 'danger' : 'default'}
+                    title="Records everyone in the room and keeps the file on this device"
+                    id="record-class"
+                    onClick={() => void toggleDeviceRecording('device')}>
+                    {localRecording ? `Stop (${bytes(recordedBytes)})` : 'Record class'}
+                  </Button>
+                  {!localRecording && canWriteFiles ? (
+                    <Button size="sm" id="record-to-file"
+                      title="Record the class straight into a file you choose"
+                      onClick={() => void toggleDeviceRecording('file')}>
+                      …to a file
+                    </Button>
+                  ) : null}
+                </>
+              ) : null}
               <Button size="sm" variant="danger" onClick={() => { leave(); router.push('/classes'); }}>
                 Leave
               </Button>
             </div>
+
+            {orphans.length ? (
+              <div className="flex flex-col gap-2 rounded-sm border border-line bg-warn-soft p-3"
+                data-testid="orphan-recordings">
+                <div className="text-[13px]">
+                  {orphans.length === 1 ? 'A recording was' : `${orphans.length} recordings were`}
+                  {' '}interrupted before {orphans.length === 1 ? 'it' : 'they'} finished. What was
+                  written is still on this device.
+                </div>
+                {orphans.map((r) => (
+                  <div key={r.id} className="flex items-center justify-between gap-2">
+                    <span className="font-mono text-[12px] text-ink-2">
+                      {new Date(r.startedAt).toLocaleString()} · {bytes(r.bytes)}
+                    </span>
+                    <span className="flex gap-1.5">
+                      <Button size="sm" data-recover={r.id} onClick={() => {
+                        void readDeviceRecording(r.id).then((blob) => {
+                          if (!blob) { store.toast('warn', 'Nothing left to recover', ''); return; }
+                          saveBlob(blob, `${r.label} (recovered).webm`);
+                          store.toast('ok', 'Recovered', `${bytes(blob.size)} saved.`);
+                        });
+                      }}>Save it</Button>
+                      <Button size="sm" variant="danger" data-discard={r.id} onClick={() => {
+                        void discardDeviceRecording(r.id)
+                          .then(() => setOrphans((all) => all.filter((o) => o.id !== r.id)));
+                      }}>Discard</Button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <Card className="flex min-h-[240px] flex-1 flex-col">

@@ -69,6 +69,21 @@ export function initGateway(server: HttpServer): Server {
       else socket.to(classRoom(payload.sessionId)).emit('classroom:signal', envelope);
     });
 
+    /* ---------------- recording on someone's own device ----------------
+       A recording made in a participant's browser never reaches this server,
+       so the server cannot announce it. The browser doing the recording says
+       so instead, and everyone else in the room is told — being recorded
+       without being told is the thing the notice exists to prevent, and it
+       does not become acceptable because the file is on a laptop. */
+    socket.on('classroom:recording:device', (payload: { sessionId: string; active: boolean }) => {
+      if (!payload?.sessionId) return;
+      socket.to(classRoom(payload.sessionId)).emit('classroom:recording', {
+        status: payload.active ? 'started' : 'stopped',
+        device: true,
+        by: user.name,
+      });
+    });
+
     /* ---------------- shared surfaces ---------------- */
     socket.on('classroom:board:stroke', (payload: { sessionId: string; stroke: unknown }) => {
       if (!payload?.sessionId) return;

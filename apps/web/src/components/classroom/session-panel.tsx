@@ -6,7 +6,8 @@ import { api } from '@/lib/api';
 import { useStore } from '@/lib/store';
 import { bytes, dayTime } from '@/lib/format';
 import { Button, Flag, Summary, SubjectPill } from '@/components/ui';
-import type { ClassSession, RecordingEstimate, User } from '@/lib/types';
+import { deviceSpace, type DeviceSpace } from '@/lib/device-recording';
+import type { ClassSession, RecordingEstimate } from '@/lib/types';
 
 export function SessionPanel({ session, withWhom, isTeacher, transport, canRecord, recording, onRecording, onEnd }: {
   session: ClassSession;
@@ -21,7 +22,10 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
 }) {
   const store = useStore();
   const [estimate, setEstimate] = useState<RecordingEstimate | null>(null);
+  const [space, setSpace] = useState<DeviceSpace | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => { void deviceSpace().then(setSpace).catch(() => undefined); }, []);
 
   useEffect(() => {
     void api.recordingEstimate(session.minutes).then(setEstimate).catch(() => undefined);
@@ -145,11 +149,27 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
           </>
         ) : null}
 
-        <p className="text-[13px] text-ink-3">
-          Your own <b>Record me</b> button in the controls is different: it captures only{' '}
-          <i>your</i> camera and microphone with <span className="font-mono">MediaRecorder</span>,
-          streaming it to a file you choose so a long class does not fill the tab's memory.
-        </p>
+        <div className="flex flex-col gap-1.5 rounded-sm border border-line bg-card p-3">
+          <div className="flex items-center justify-between">
+            <span className="eyebrow">Or record on this device</span>
+            <span className="font-mono text-[13px] text-ink-3" data-testid="device-space">
+              {space === null ? 'checking…'
+                : space.free == null ? 'space unknown'
+                  : `${bytes(space.free)} free`}
+            </span>
+          </div>
+          <p className="text-[13px] text-ink-3">
+            <b>Record class</b> in the controls — the teacher's, like the one above — composites
+            everyone in the room here in the browser
+            and keeps the file on this machine — no media server and no bucket, so it works whether
+            or not the ones above are configured. It is written out as the class runs, so a long
+            lesson costs a few megabytes of memory rather than the whole recording, and what was
+            written survives the tab closing.
+            {space?.persisted === false
+              ? ' This browser has not promised to keep it, so leave the tab open until you stop.'
+              : ''}
+          </p>
+        </div>
       </section>
     </div>
   );

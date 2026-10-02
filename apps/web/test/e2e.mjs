@@ -635,6 +635,131 @@ ok('and invoicing the class again does not bill anyone twice',
 await owner4.close();
 await tutor.close();
 
+console.log('\n12. Recording the class onto the device');
+
+// Headless Chromium has no save dialog, so this exercises the path every
+// browser without the File System Access API takes: chunks into IndexedDB,
+// assembled when the recording stops.
+const recTeacher = await open('rec-teacher');
+await signIn(recTeacher, 'daniel@logicclass.plus', 'teach1234');
+const recStudent = await open('rec-student');
+await signIn(recStudent, 'amira@logicclass.plus', 'learn1234');
+
+const recSessionId = await recTeacher.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/classes/sessions`, { headers: { authorization: `Bearer ${token}` } });
+  const { sessions } = await r.json();
+  const live = sessions.find((s) => s.status === 'scheduled' || s.status === 'live');
+  return live?.id ?? sessions[0]?.id ?? null;
+}, API);
+
+for (const page of [recTeacher, recStudent]) {
+  await page.goto(`${WEB}/room/${recSessionId}`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#hw-join', { timeout: 20_000 });
+  await page.waitForTimeout(1200);
+  await page.click('#hw-join');
+  await page.waitForTimeout(2500);
+}
+await recTeacher.waitForTimeout(5000);
+
+await recTeacher.click('#record-class');
+await recTeacher.waitForTimeout(1500);
+ok('the button turns into a running total',
+  /Stop/.test(await recTeacher.textContent('#record-class')),
+  await recTeacher.textContent('#record-class'));
+
+// Being recorded without being told is the thing the notice prevents, and a
+// file on a laptop is still a recording.
+const told = (await recStudent.textContent('body')).replace(/\s+/g, ' ');
+ok('the other participant is told, and by whom',
+  /being recorded/i.test(told) && /own device/i.test(told), told.slice(0, 200));
+
+ok('and their screen shows the class is being recorded',
+  /CLASS REC/.test((await recStudent.textContent('body')).replace(/\s+/g, ' ')));
+ok('a student has no button to record everyone else',
+  await recStudent.locator('#record-class').count() === 0);
+
+// Long enough for several five-second chunks to land.
+await recTeacher.waitForTimeout(12_000);
+
+const written = await recTeacher.evaluate(() => new Promise((resolve) => {
+  const req = indexedDB.open('logicclass-recordings');
+  req.onsuccess = () => {
+    const db = req.result;
+    const tx = db.transaction('chunks', 'readonly');
+    const all = tx.objectStore('chunks').getAll();
+    all.onsuccess = () => resolve({
+      chunks: all.result.length,
+      bytes: all.result.reduce((sum, r) => sum + r.blob.size, 0),
+    });
+    all.onerror = () => resolve({ chunks: 0, bytes: 0 });
+  };
+  req.onerror = () => resolve({ chunks: 0, bytes: 0 });
+}));
+ok('chunks are on the device while the class is still running',
+  written.chunks >= 2 && written.bytes > 10_000, JSON.stringify(written));
+
+const growing = await recTeacher.textContent('#record-class');
+ok('and the total shown is growing', !/Stop \(0/.test(growing), growing);
+
+await recTeacher.click('#record-class');
+await recTeacher.waitForTimeout(4000);
+
+const file = await recTeacher.evaluate(() => new Promise((resolve) => {
+  const req = indexedDB.open('logicclass-recordings');
+  req.onsuccess = () => {
+    const db = req.result;
+    const tx = db.transaction(['chunks', 'recordings'], 'readonly');
+    const chunks = tx.objectStore('chunks').getAll();
+    const meta = tx.objectStore('recordings').getAll();
+    tx.oncomplete = async () => {
+      const parts = chunks.result.sort((a, b) => a.seq - b.seq).map((r) => r.blob);
+      const blob = new Blob(parts, { type: 'video/webm' });
+      const head = new Uint8Array(await blob.slice(0, 4).arrayBuffer());
+      resolve({
+        size: blob.size,
+        // EBML magic: every WebM file starts 1A 45 DF A3.
+        webm: head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3,
+        complete: meta.result.every((m) => m.complete),
+        recordings: meta.result.length,
+      });
+    };
+  };
+  req.onerror = () => resolve({ size: 0, webm: false, complete: false, recordings: 0 });
+}));
+ok('stopping leaves a real WebM file assembled from those chunks',
+  file.webm && file.size > 10_000, JSON.stringify(file));
+ok('and the recording is marked finished rather than interrupted',
+  file.complete && file.recordings >= 1, JSON.stringify(file));
+
+const stoppedNotice = (await recStudent.textContent('body')).replace(/\s+/g, ' ');
+ok('the room is told when it stops',
+  /Recording stopped/i.test(stoppedNotice), stoppedNotice.slice(-220));
+ok('and the recording badge clears for them',
+  !/CLASS REC/.test(stoppedNotice));
+
+// What a crashed tab leaves behind is offered back on the way in.
+await recTeacher.evaluate(() => new Promise((resolve) => {
+  const req = indexedDB.open('logicclass-recordings');
+  req.onsuccess = () => {
+    const db = req.result;
+    const tx = db.transaction('recordings', 'readwrite');
+    const store = tx.objectStore('recordings');
+    const all = store.getAll();
+    all.onsuccess = () => {
+      all.result.forEach((r) => store.put({ ...r, complete: false }));
+    };
+    tx.oncomplete = () => resolve(true);
+  };
+}));
+await recTeacher.reload({ waitUntil: 'networkidle' });
+await recTeacher.waitForTimeout(3500);
+ok('an interrupted recording is offered back next time the room is opened',
+  await recTeacher.locator('[data-testid=orphan-recordings]').count() === 1);
+
+await recTeacher.close();
+await recStudent.close();
+
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');
 await browser.close();
