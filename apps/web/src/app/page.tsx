@@ -19,16 +19,11 @@ const DEMO = [
 export default function AuthPage() {
   const store = useStore();
   const router = useRouter();
-  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [forgot, setForgot] = useState(false);
-  const [pending, setPending] = useState<string | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  /* A parent picks no subject, so the field next to the role goes away
-     rather than sitting there asking a question that has no answer. */
-  const [signUpAs, setSignUpAs] = useState<'student' | 'teacher' | 'parent'>('student');
 
   useEffect(() => {
     if (store.ready && store.user) router.replace('/dashboard');
@@ -51,47 +46,12 @@ export default function AuthPage() {
     await signInWith(email, password);
   }
 
-  async function register(e: React.FormEvent) {
-    e.preventDefault();
-    const form = new FormData(e.currentTarget as HTMLFormElement);
-    setError(''); setBusy(true);
-    try {
-      const { user } = await api.register({
-        name: String(form.get('name')),
-        email: String(form.get('email')),
-        password: String(form.get('password')),
-        role: signUpAs,
-        subjects: signUpAs === 'parent' ? [] : [form.get('subject') as Subject],
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
-      setMode('login');
-      setPending(user.name.split(' ')[0] ?? user.name);
-    } catch (err) {
-      setError((err as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <div className="grid min-h-full lg:grid-cols-[1.05fr_.95fr]">
       <ArtPanel />
 
       <section className="grid place-items-center overflow-y-auto px-6 py-9">
         <div className="flex w-[min(400px,100%)] flex-col gap-4">
-          <div className="flex gap-0.5 rounded-sm bg-sunk p-[3px]">
-            {(['login', 'register'] as const).map((m) => (
-              <button
-                key={m} data-mode={m} onClick={() => { setMode(m); setError(''); }}
-                className={`flex-1 rounded-[5px] py-1.5 text-[13.5px] font-medium ${
-                  mode === m ? 'bg-card text-ink shadow-1' : 'text-ink-2'}`}
-              >
-                {m === 'login' ? 'Sign in' : 'Create account'}
-              </button>
-            ))}
-          </div>
-
-          {mode === 'login' ? (
             <form className="flex flex-col gap-4" onSubmit={signIn}>
               <div>
                 <h1 className="text-[26px]">Welcome back</h1>
@@ -114,60 +74,21 @@ export default function AuthPage() {
                 Forgot your password?
               </Button>
             </form>
-          ) : (
-            <form className="flex flex-col gap-4" onSubmit={register}>
-              <div>
-                <h1 className="text-[26px]">Create your account</h1>
-                <p className="mt-1 text-[13px] text-ink-2">
-                  Teachers and students register here. The administrator account is seeded and
-                  cannot be created from this form.
-                </p>
-              </div>
-              <Field label="Full name"><input name="name" required placeholder="Your name" /></Field>
-              <Field label="Email">
-                <input name="email" type="email" autoComplete="username" required placeholder="you@school.com" />
-              </Field>
-              <Field label="Password">
-                <input name="password" type="password" autoComplete="new-password" required
-                  placeholder="At least 8 characters" />
-              </Field>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="I am a">
-                  <select name="role" value={signUpAs}
-                    onChange={(e) => setSignUpAs(e.target.value as typeof signUpAs)}>
-                    <option value="student">Student</option>
-                    <option value="teacher">Teacher</option>
-                    <option value="parent">Parent or guardian</option>
-                  </select>
-                </Field>
-                {signUpAs === 'parent' ? null : (
-                  <Field label="Subject">
-                    <select name="subject" defaultValue="math">
-                      <option value="math">Math</option>
-                      <option value="english">English</option>
-                    </select>
-                  </Field>
-                )}
-              </div>
-              {error ? <Flag title="Cannot continue">{error}</Flag> : null}
-              <Button type="submit" variant="primary" className="w-full" disabled={busy}>
-                Create account
-              </Button>
-              <p className="text-[13px] text-ink-3">
-                New accounts are reviewed by the administrator before the first sign-in.
-                {signUpAs === 'parent'
-                  ? ' A parent is also linked to their children by the administrator.'
-                  : ''}
-              </p>
-            </form>
-          )}
+
+          <div className="rounded-sm border border-dashed border-line-2 bg-card-2 px-3.5 py-3">
+            <div className="eyebrow mb-1">No account?</div>
+            <p className="text-[13px] text-ink-2">
+              Accounts here are created by invitation, not by signing up — which is how the
+              roster stays a list of real teachers and students. Ask the administrator to send
+              you a link, and opening it is all it takes.
+            </p>
+          </div>
 
           <div className="rounded-sm border border-dashed border-line-2 bg-card-2 px-3.5 py-3">
             <div className="eyebrow mb-1.5">Demo accounts — click to sign in</div>
             {DEMO.map(([label, addr, pass]) => (
               <button key={addr} type="button" data-demo={addr} disabled={busy}
                 onClick={() => {
-                  setMode('login');
                   setEmail(addr); setPassword(pass);
                   void signInWith(addr, pass);
                 }}
@@ -189,16 +110,6 @@ export default function AuthPage() {
         }} />
       ) : null}
 
-      {pending ? (
-        <Modal title="Account created — waiting for approval" onClose={() => setPending(null)}>
-          <p>Thanks, {pending}. Your account was created and the administrator has been notified.</p>
-          <p className="text-ink-2">
-            Registrations are reviewed before the first sign-in. To see the approval flow now, sign in
-            as the Owner (<span className="font-mono">owner@logicclass.plus</span>) and approve it from
-            the dashboard.
-          </p>
-        </Modal>
-      ) : null}
     </div>
   );
 }

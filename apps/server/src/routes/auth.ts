@@ -10,6 +10,7 @@ import { asyncRoute, validate } from '../lib/validate.js';
 import { conflict, unauthorized } from '../lib/http-error.js';
 import { publicUser } from '../lib/serialize.js';
 import { actor, requireAuth } from '../middleware/auth.js';
+import { hashToken, inviteState } from './invitations.js';
 import { notify } from '../services/notifications.js';
 
 export const authRouter = Router();
@@ -27,59 +28,90 @@ const credentials = z.object({
   password: z.string().min(1, 'Enter your password.'),
 });
 
-/* Registration is Teacher/Student only. OWNER is seeded and can never be
-   created from this endpoint — the enum below simply has no owner member. */
+/* Registration is by invitation. The role comes from the invitation rather
+   than from the form, so nobody picks their own; OWNER is seeded and cannot
+   be invited either. */
 const registration = z.object({
+  token: z.string().min(1, 'An invitation link is required to create an account.'),
   name: z.string().trim().min(2, 'Enter your full name.'),
   email: z.string().trim().toLowerCase().email('Enter a valid email address.'),
   password: z.string().min(8, 'Use at least 8 characters for your password.'),
-  role: z.enum(['teacher', 'student', 'parent']),
-  /* A parent teaches nothing and studies nothing, so they pick no subject —
-     hence the empty array is allowed rather than defaulted to maths. */
-  subjects: z.array(z.enum(['math', 'english'])).default(['math']),
   locale: z.string().max(12).optional(),
   timezone: z.string().max(64).optional(),
   gradeLevel: z.string().max(64).optional(),
 });
 
-/* Spelled out rather than a ternary: the old `=== 'teacher' ? TEACHER :
-   STUDENT` silently made every parent a student when the parent role was
-   added to the enum above. A map has to be edited when the enum grows. */
-const ROLES = { teacher: 'TEACHER', student: 'STUDENT', parent: 'PARENT' } as const;
-
 authRouter.post('/register', attemptLimit, validate(registration), asyncRoute(async (req, res) => {
   const input = req.body as z.infer<typeof registration>;
+
+  const invite = await prisma.invitation.findUnique({
+    where: { tokenHash: hashToken(input.token) },
+  });
+  if (!invite) throw unauthorized('That invitation link is not valid.');
+  const state = inviteState(invite);
+  if (state !== 'open') {
+    throw unauthorized(state === 'accepted'
+      ? 'That invitation has already been used. Ask for a new one.'
+      : state === 'expired'
+        ? 'That invitation has expired. Ask for a new one.'
+        : 'That invitation was withdrawn.');
+  }
+  // An invitation addressed to someone is for them, not for whoever opens it.
+  if (invite.email && invite.email !== input.email) {
+    throw unauthorized(`That invitation is for ${invite.email}.`);
+  }
+
   const existing = await prisma.user.findUnique({ where: { email: input.email } });
   if (existing) throw conflict('That email already has an account. Sign in instead.');
 
-  const user = await prisma.user.create({
-    data: {
-      email: input.email,
-      name: input.name,
-      passwordHash: await hashPassword(input.password),
-      role: ROLES[input.role],
-      status: 'PENDING', // held until the Owner approves
-      locale: input.locale ?? 'en-US',
-      timezone: input.timezone ?? 'UTC',
-      subjects: input.role === 'parent'
-        ? []
-        : input.subjects.map((s) => (s === 'math' ? 'MATH' : 'ENGLISH')),
-      hourlyRateCents: input.role === 'teacher' ? 2200 : null,
-      gradeLevel: input.role === 'student' ? input.gradeLevel ?? null : null,
-    },
+  /* Accepted as part of creating the account, so one link cannot make two.
+     Two people opening the same link at the same moment both pass the check
+     above; the unique index on acceptedById and the conditional update are
+     what actually decide it. */
+  const user = await prisma.$transaction(async (tx) => {
+    const claimed = await tx.invitation.updateMany({
+      where: { id: invite.id, acceptedAt: null, revokedAt: null },
+      data: { acceptedAt: new Date() },
+    });
+    if (!claimed.count) throw unauthorized('That invitation has already been used.');
+
+    const created = await tx.user.create({
+      data: {
+        email: input.email,
+        name: input.name,
+        passwordHash: await hashPassword(input.password),
+        role: invite.role,
+        // The Owner already decided this person should be here, which is
+        // what approval means — so there is nothing left to approve.
+        status: 'ACTIVE',
+        locale: input.locale ?? 'en-US',
+        timezone: input.timezone ?? 'UTC',
+        subjects: invite.subjects,
+        hourlyRateCents: invite.role === 'TEACHER' ? invite.hourlyRateCents ?? 2200 : null,
+        gradeLevel: invite.role === 'STUDENT'
+          ? invite.gradeLevel ?? input.gradeLevel ?? null
+          : null,
+      },
+    });
+    await tx.invitation.update({
+      where: { id: invite.id }, data: { acceptedById: created.id },
+    });
+    return created;
   });
 
   const owners = await prisma.user.findMany({ where: { role: 'OWNER' } });
   for (const owner of owners) {
     await notify({
       userId: owner.id, type: 'account',
-      title: `New ${input.role} registration`,
-      body: `${user.name} (${user.email}) is waiting for approval.`,
-      url: '/#/users',
+      title: `${user.name} accepted their invitation`,
+      body: `${user.email} joined as a ${user.role.toLowerCase()}.`,
+      url: '/#/admin',
     });
   }
 
-  res.status(201).json({ user: publicUser(user), pending: true });
+  // Invited, so they can sign in immediately rather than waiting to be let in.
+  const token = signToken({ sub: user.id, role: user.role, email: user.email });
+  res.status(201).json({ user: publicUser(user), token, pending: false });
 }));
 
 authRouter.post('/login', attemptLimit, validate(credentials), asyncRoute(async (req, res) => {

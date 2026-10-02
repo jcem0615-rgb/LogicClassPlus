@@ -7,7 +7,7 @@
  */
 import type {
   Announcement, Assessment, AttendanceRow, ChatMessage, ClassRequest, ClassSession,
-  Folder, Health, Invoice, Notification, PayrollBatch, PayrollLine, PayrollPolicy,
+  Folder, Health, Invitation, Invoice, Notification, PayrollBatch, PayrollLine, PayrollPolicy,
   RecordingEstimate, ResetRequest, Resource, SfuCredentials, SpeechStatus, Subject, User,
 } from './types';
 
@@ -133,9 +133,23 @@ export const api = {
   login: (email: string, password: string) =>
     post<{ token: string; user: User }>('/auth/login', { email, password }),
   register: (input: {
-    name: string; email: string; password: string;
-    role: 'teacher' | 'student' | 'parent'; subjects: Subject[]; timezone?: string;
-  }) => post<{ user: User; pending: boolean }>('/auth/register', input),
+    token: string; name: string; email: string; password: string;
+    timezone?: string; gradeLevel?: string;
+  }) => post<{ user: User; token: string; pending: boolean }>('/auth/register', input),
+
+  /* invitations */
+  invitation: (token: string) => get<{
+    state: 'open' | 'accepted' | 'revoked' | 'expired';
+    role: 'teacher' | 'student' | 'parent';
+    email: string | null; subjects: Subject[]; gradeLevel: string | null;
+    note: string | null; expiresAt: string;
+  }>(`/invitations/${encodeURIComponent(token)}`),
+  invitations: () => get<{ invitations: Invitation[] }>('/invitations'),
+  createInvitation: (input: {
+    role: 'teacher' | 'student' | 'parent'; email?: string; subjects?: Subject[];
+    hourlyRate?: number; gradeLevel?: string; note?: string; expiresInDays?: number;
+  }) => post<{ invitation: Invitation; token: string }>('/invitations', input),
+  revokeInvitation: (id: string) => del<{ invitation: Invitation }>(`/invitations/${id}`),
   logout: () => post<{ ok: true }>('/auth/logout'),
   me: () => get<{ user: User }>('/auth/me'),
   requestPasswordReset: (email: string) => post<{ ok: true }>('/auth/password-reset', { email }),

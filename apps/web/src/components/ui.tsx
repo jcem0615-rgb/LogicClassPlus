@@ -146,13 +146,20 @@ export const Flag = ({ tone = 'warn', title, children }: {
   </div>
 );
 
-export function Modal({ title, onClose, footer, children }: {
+export function Modal({ title, onClose, footer, children, dismissOnBackdrop = true }: {
   title: string; onClose: () => void; footer?: ReactNode; children: ReactNode;
+  /**
+   * Whether clicking the dark area closes it. A dialog that is only being
+   * read can; one with a half-typed value in it should not, because the
+   * click that dismisses it is indistinguishable from a missed click and
+   * the typing is gone either way.
+   */
+  dismissOnBackdrop?: boolean;
 }) {
   return (
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-[rgba(9,18,21,.55)] p-4 backdrop-blur-[2px]"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => { if (dismissOnBackdrop && e.target === e.currentTarget) onClose(); }}
     >
       <div className="flex max-h-[88vh] w-full max-w-[680px] flex-col overflow-hidden rounded-lg border border-line-2 bg-card shadow-2">
         <div className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">

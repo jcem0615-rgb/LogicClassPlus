@@ -9,7 +9,7 @@ import { publicInvoice } from '../lib/serialize.js';
 import { fromCents, toCents } from '../lib/money.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
 import { visibleStudentIds } from '../lib/scope.js';
-import { invoiceNumber, stripe } from '../services/billing.js';
+import { createInvoiceWithNumber, stripe } from '../services/billing.js';
 import { notify } from '../services/notifications.js';
 
 export const billingRouter = Router();
@@ -46,16 +46,15 @@ billingRouter.post('/invoices', requireRole('OWNER'), validate(createInvoice),
     if (!student || student.role !== 'STUDENT') throw notFound('That student does not exist.');
 
     const amountCents = input.lines.reduce((sum, l) => sum + toCents(l.amount), 0);
-    const count = await prisma.invoice.count();
 
-    const invoice = await prisma.invoice.create({
+    const invoice = await createInvoiceWithNumber((number) => prisma.invoice.create({
       data: {
-        number: invoiceNumber(count + 1), studentId: student.id, amountCents,
+        number, studentId: student.id, amountCents,
         currency: input.currency.toUpperCase(), status: 'OPEN', dueAt: input.dueAt,
         lines: { create: input.lines.map((l) => ({ label: l.label, amountCents: toCents(l.amount) })) },
       },
       include: { lines: true },
-    });
+    }));
 
     await notify({
       userId: student.id, type: 'billing', title: `Invoice ${invoice.number} is open`,
@@ -95,8 +94,14 @@ billingRouter.post('/invoices/for-class/:sessionId', requireRole('OWNER'),
     if (!session.participants.length) throw badRequest('Nobody has booked that class.');
 
     const label = `${session.topic} — group seat, ${session.minutes} min`;
+    /* Keyed on the class. Matching the label instead meant two classes with
+       the same title — "Quadratics clinic", every week — counted as one, and
+       the second one silently billed nobody. */
     const already = await prisma.invoiceLine.findMany({
-      where: { label, invoice: { studentId: { in: session.participants.map((p) => p.studentId) } } },
+      where: {
+        sessionId: session.id,
+        invoice: { studentId: { in: session.participants.map((p) => p.studentId) } },
+      },
       include: { invoice: { select: { studentId: true } } },
     });
     const billed = new Set(already.map((l) => l.invoice.studentId));
@@ -105,16 +110,15 @@ billingRouter.post('/invoices/for-class/:sessionId', requireRole('OWNER'),
     const dueAt = new Date(Date.now() + dueInDays * 24 * 3600e3);
     const created = [];
     for (const seat of toBill) {
-      const count = await prisma.invoice.count();
-      const invoice = await prisma.invoice.create({
+      const invoice = await createInvoiceWithNumber((number) => prisma.invoice.create({
         data: {
-          number: invoiceNumber(count + 1), studentId: seat.studentId,
-          amountCents: session.seatPriceCents, currency: env.PAYROLL_CURRENCY,
+          number, studentId: seat.studentId,
+          amountCents: session.seatPriceCents!, currency: env.PAYROLL_CURRENCY,
           status: 'OPEN', dueAt,
-          lines: { create: [{ label, amountCents: session.seatPriceCents }] },
+          lines: { create: [{ label, amountCents: session.seatPriceCents!, sessionId: session.id }] },
         },
         include: { lines: true },
-      });
+      }));
       created.push(invoice);
       await notify({
         userId: seat.studentId, type: 'billing', title: `Invoice ${invoice.number} is open`,

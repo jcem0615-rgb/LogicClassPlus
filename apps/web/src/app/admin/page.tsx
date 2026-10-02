@@ -7,16 +7,16 @@
  * with the fields the Owner actually changes — pay rate above all, since
  * payroll multiplies it by every minute taught; then the reset queue.
  */
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '@/lib/api';
 import { useStore } from '@/lib/store';
-import { ago, money } from '@/lib/format';
+import { ago, day, money } from '@/lib/format';
 import { Shell } from '@/components/shell';
 import {
   Avatar, Button, Card, CardHead, Empty, Field, Flag, Modal, Pill, StatusPill,
   SubjectPill, Summary, Table, Td, Th,
 } from '@/components/ui';
-import type { Subject, User } from '@/lib/types';
+import type { Invitation, Subject, User } from '@/lib/types';
 
 export default function AdminPage() {
   const store = useStore();
@@ -70,6 +70,8 @@ export default function AdminPage() {
           ))}
         </Card>
       ) : null}
+
+      <InviteCard />
 
       <Card>
         <CardHead title="All accounts" />
@@ -222,6 +224,172 @@ export default function AdminPage() {
   );
 }
 
+/**
+ * Inviting people in.
+ *
+ * This is how an account comes to exist: there is no sign-up form any more,
+ * so the roster only ever contains people the Owner decided to let in. The
+ * link is shown once, right after it is made — the server keeps only a hash
+ * of it, so it cannot be shown again and a copy of the database is not a
+ * pile of working invitations.
+ */
+function InviteCard() {
+  const store = useStore();
+  const [invites, setInvites] = useState<Invitation[]>([]);
+  const [fresh, setFresh] = useState<{ link: string; role: string; email: string | null } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [role, setRole] = useState<'teacher' | 'student' | 'parent'>('teacher');
+
+  const load = useCallback(async () => {
+    try { setInvites((await api.invitations()).invitations); } catch { /* shown empty */ }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  async function create(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const data = new FormData(form);
+    setBusy(true);
+    const made = await store.run(() => api.createInvitation({
+      role,
+      email: String(data.get('email') || '').trim() || undefined,
+      subjects: role === 'parent' ? [] : [data.get('subject') as Subject],
+      ...(role === 'teacher' && data.get('rate')
+        ? { hourlyRate: Number(String(data.get('rate')).replace(',', '.')) } : {}),
+      ...(role === 'student' && data.get('grade')
+        ? { gradeLevel: String(data.get('grade')) } : {}),
+      note: String(data.get('note') || '').trim() || undefined,
+      expiresInDays: Number(data.get('days') || 14),
+    }));
+    if (made) {
+      setFresh({
+        link: `${window.location.origin}/join/${made.token}`,
+        role,
+        email: made.invitation.email,
+      });
+      form.reset();
+      await load();
+    }
+    setBusy(false);
+  }
+
+  const open = invites.filter((i) => i.state === 'open');
+
+  return (
+    <Card>
+      <CardHead title="Invite people">
+        <span className="text-[13px] text-ink-3">
+          {open.length} link{open.length === 1 ? '' : 's'} outstanding
+        </span>
+      </CardHead>
+
+      <form className="flex flex-col gap-3.5 p-[18px]" onSubmit={create} data-testid="invite-form">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <Field label="They will be a">
+            <select name="role" value={role} data-testid="invite-role"
+              onChange={(e) => setRole(e.target.value as typeof role)}>
+              <option value="teacher">Teacher</option>
+              <option value="student">Student</option>
+              <option value="parent">Parent or guardian</option>
+            </select>
+          </Field>
+          <Field label="Email (optional)">
+            <input name="email" type="email" placeholder="locks the link to one person" />
+          </Field>
+          {role === 'parent' ? null : (
+            <Field label="Subject">
+              <select name="subject" defaultValue="math">
+                <option value="math">Math</option><option value="english">English</option>
+              </select>
+            </Field>
+          )}
+          {role === 'teacher' ? (
+            <Field label="Pay rate per hour">
+              <input name="rate" inputMode="decimal" placeholder="e.g. 26" />
+            </Field>
+          ) : null}
+          {role === 'student' ? (
+            <Field label="Grade level">
+              <input name="grade" placeholder="e.g. Year 9" />
+            </Field>
+          ) : null}
+          <Field label="Link valid for">
+            <select name="days" defaultValue="14">
+              <option value="2">2 days</option>
+              <option value="7">7 days</option>
+              <option value="14">14 days</option>
+              <option value="30">30 days</option>
+            </select>
+          </Field>
+        </div>
+        <Field label="Note for them (optional)">
+          <input name="note" placeholder="e.g. Looking forward to having you with the Year 10 group" />
+        </Field>
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[13px] text-ink-3">
+            Whoever opens the link sets their own password and is active immediately — inviting
+            them is the approval.
+          </span>
+          <Button type="submit" variant="primary" disabled={busy}>Create invitation</Button>
+        </div>
+      </form>
+
+      {fresh ? (
+        <div className="mx-[18px] mb-[18px] flex flex-col gap-2 rounded-sm border border-line bg-warn-soft p-3.5"
+          data-testid="fresh-invite">
+          <div className="text-[13px]">
+            Send this to your new {fresh.role}{fresh.email ? ` at ${fresh.email}` : ''}. It is shown
+            once — the server keeps only a hash of it, so this is the only time it can be read.
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <input readOnly value={fresh.link} id="invite-link"
+              className="min-w-0 flex-1 font-mono text-[12.5px]"
+              onFocus={(e) => e.currentTarget.select()} />
+            <Button size="sm" onClick={() => {
+              void navigator.clipboard?.writeText(fresh.link)
+                .then(() => store.toast('ok', 'Link copied', 'Paste it into an email or a message.'))
+                .catch(() => store.toast('warn', 'Could not copy', 'Select the link and copy it.'));
+            }}>Copy</Button>
+            <Button size="sm" variant="ghost" onClick={() => setFresh(null)}>Done</Button>
+          </div>
+        </div>
+      ) : null}
+
+      {invites.length ? (
+        <Table>
+          <thead>
+            <tr><Th>For</Th><Th>Role</Th><Th>Sent</Th><Th>Expires</Th><Th>State</Th><Th /></tr>
+          </thead>
+          <tbody>
+            {invites.slice(0, 12).map((i) => (
+              <tr key={i.id} className="hover:bg-card-2" data-invite={i.id}>
+                <Td className="text-[13px]">{i.email ?? <span className="text-ink-3">anyone with the link</span>}</Td>
+                <Td><Pill>{i.role}</Pill></Td>
+                <Td className="font-mono text-[13px]">{ago(i.createdAt)}</Td>
+                <Td className="font-mono text-[13px]">{day(i.expiresAt)}</Td>
+                <Td>
+                  <Pill tone={i.state === 'open' ? 'ok' : i.state === 'accepted' ? 'neutral' : 'crit'}>
+                    {i.state === 'accepted' && i.acceptedBy ? `used by ${i.acceptedBy}` : i.state}
+                  </Pill>
+                </Td>
+                <Td>
+                  {i.state === 'open' ? (
+                    <Button size="sm" variant="danger" data-revoke={i.id} onClick={() => {
+                      void store.run(() => api.revokeInvitation(i.id),
+                        { title: 'Invitation withdrawn', body: 'That link no longer works.' })
+                        .then(load);
+                    }}>Withdraw</Button>
+                  ) : null}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </Table>
+      ) : null}
+    </Card>
+  );
+}
+
 function EditAccount({ user, onClose, onSave }: {
   user: User;
   onClose: () => void;
@@ -231,26 +399,57 @@ function EditAccount({ user, onClose, onSave }: {
   const [subjects, setSubjects] = useState<Subject[]>(user.subjects);
   const [rate, setRate] = useState(String(user.hourlyRate ?? ''));
   const [grade, setGrade] = useState(user.gradeLevel ?? '');
+  const [rateError, setRateError] = useState('');
 
   const isTeacher = user.role === 'teacher';
   const toggle = (s: Subject) =>
     setSubjects((all) => (all.includes(s) ? all.filter((x) => x !== s) : [...all, s]));
 
+  /**
+   * A rate as typed. Half the world writes 26,50 and a `type=number` input
+   * discards it silently — the field simply empties and the save goes through
+   * without the rate, which looks exactly like "I cannot edit this".
+   */
+  const parseRate = (raw: string): number | null => {
+    const cleaned = raw.trim().replace(',', '.').replace(/[^0-9.]/g, '');
+    if (!cleaned) return null;
+    const value = Number(cleaned);
+    return Number.isFinite(value) ? value : null;
+  };
+
+  function save() {
+    const trimmed = rate.trim();
+    let hourlyRate: number | undefined;
+    if (isTeacher && trimmed !== '') {
+      const parsed = parseRate(trimmed);
+      if (parsed === null || parsed < 0 || parsed > 1000) {
+        setRateError('Enter a rate between 0 and 1000, like 26 or 26.50.');
+        return;
+      }
+      hourlyRate = parsed;
+    }
+    setRateError('');
+    onSave({
+      name: name.trim(),
+      subjects,
+      ...(hourlyRate === undefined ? {} : { hourlyRate }),
+      ...(user.role === 'student' ? { gradeLevel: grade.trim() || null } : {}),
+    });
+  }
+
   return (
     <Modal
       title={`Edit ${user.name}`}
       onClose={onClose}
+      // Half-typed values live in here; a missed click should not bin them.
+      dismissOnBackdrop={false}
       footer={
-        <Button variant="primary" data-save-account onClick={() => onSave({
-          name: name.trim(),
-          subjects,
-          ...(isTeacher && rate !== '' ? { hourlyRate: Number(rate) } : {}),
-          ...(user.role === 'student' ? { gradeLevel: grade.trim() || null } : {}),
-        })}>Save changes</Button>
+        <Button variant="primary" data-save-account onClick={save}>Save changes</Button>
       }
     >
       <Field label="Full name">
-        <input value={name} onChange={(e) => setName(e.target.value)} />
+        <input value={name} onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }} />
       </Field>
 
       <Field label="Subjects">
@@ -264,10 +463,18 @@ function EditAccount({ user, onClose, onSave }: {
 
       {isTeacher ? (
         <Field label="Pay rate per hour">
+          {/* Text rather than number: a number input rejects a comma decimal
+              by blanking itself, swallows a stray scroll over the field, and
+              gives no way to say what is wrong with what was typed. */}
           <input
-            id="rate-input" type="number" min={0} max={1000} step="0.5" value={rate}
-            onChange={(e) => setRate(e.target.value)} placeholder="e.g. 24"
+            id="rate-input" type="text" inputMode="decimal" value={rate}
+            onChange={(e) => { setRate(e.target.value); setRateError(''); }}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); save(); } }}
+            placeholder="e.g. 26 or 26.50" aria-invalid={rateError ? true : undefined}
           />
+          {rateError
+            ? <span className="text-[13px] text-crit" data-testid="rate-error">{rateError}</span>
+            : null}
         </Field>
       ) : null}
 
@@ -279,7 +486,10 @@ function EditAccount({ user, onClose, onSave }: {
 
       <p className="text-[13px] text-ink-3">
         {isTeacher
-          ? 'Payroll multiplies this rate by the minutes actually taught, so a change applies to batches generated from now on — figures already frozen in an approved batch do not move.'
+          ? 'Press Enter or Save changes to apply it. Payroll multiplies this rate by the minutes '
+            + 'actually taught, so a change applies to batches generated from now on — figures '
+            + 'already frozen in an approved batch do not move. Leaving the box empty keeps the '
+            + 'current rate.'
           : 'Role and account status are changed from the table, not here.'}
       </p>
     </Modal>

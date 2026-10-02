@@ -111,6 +111,8 @@ model User {
   resolvedResets    PasswordResetRequest[] @relation("ResetResolver")
   chatMessages      ChatMessage[]
   attempts          PronunciationAttempt[] @relation("StudentAttempts")
+  invitesSent       Invitation[]           @relation("InvitesSent")
+  invitedBy         Invitation?            @relation("InviteAccepted")
   children          Guardian[]             @relation("GuardianParent")
   guardians         Guardian[]             @relation("GuardianStudent")
 
@@ -377,12 +379,18 @@ model Invoice {
 }
 
 model InvoiceLine {
-  id          String @id @default(cuid())
+  id          String  @id @default(cuid())
   invoiceId   String
   label       String
   amountCents Int
+  /// The class this line charges for, when it charges for one. Billing a
+  /// group class twice has to be recognised by the class, not by the words
+  /// on the line: two classes can share a title.
+  sessionId   String?
 
   invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
 }
 
 /// One recorded attempt at a pronunciation drill, scored by the speech
@@ -426,6 +434,36 @@ model Notification {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, createdAt])
+}
+
+/// An invitation to join. Registration is by invitation only: the Owner
+/// decides who gets an account, so there is no open form for anyone on the
+/// internet to fill in.
+///
+/// Only the hash of the token is stored. The link is shown once, when it is
+/// created, and a copy of the database does not hand out accounts.
+model Invitation {
+  id              String    @id @default(cuid())
+  tokenHash       String    @unique
+  /// Optional: when set, only this address may accept it.
+  email           String?
+  role            Role
+  subjects        Subject[] @default([])
+  /// A teacher's rate, agreed before they join rather than after.
+  hourlyRateCents Int?
+  gradeLevel      String?
+  note            String?
+  createdById     String
+  expiresAt       DateTime
+  acceptedAt      DateTime?
+  acceptedById    String?   @unique
+  revokedAt       DateTime?
+  createdAt       DateTime  @default(now())
+
+  createdBy  User  @relation("InvitesSent", fields: [createdById], references: [id], onDelete: Cascade)
+  acceptedBy User? @relation("InviteAccepted", fields: [acceptedById], references: [id], onDelete: SetNull)
+
+  @@index([role, acceptedAt])
 }
 
 model PasswordResetRequest {

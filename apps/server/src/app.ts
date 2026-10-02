@@ -8,6 +8,7 @@ import { ALLOWED_ORIGINS, env, isPushConfigured, isS3Configured, isStripeConfigu
 import { HttpError } from './lib/http-error.js';
 import { attachUser } from './middleware/auth.js';
 import { authRouter } from './routes/auth.js';
+import { invitationsRouter } from './routes/invitations.js';
 import { usersRouter } from './routes/users.js';
 import { libraryRouter } from './routes/library.js';
 import { announcementsRouter } from './routes/announcements.js';
@@ -68,6 +69,7 @@ export function createApp() {
   });
 
   app.use('/api/auth', authRouter);
+  app.use('/api/invitations', invitationsRouter);
   app.use('/api/users', usersRouter);
   app.use('/api/library', libraryRouter);
   app.use('/api/announcements', announcementsRouter);

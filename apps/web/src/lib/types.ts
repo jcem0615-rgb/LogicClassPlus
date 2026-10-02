@@ -135,6 +135,21 @@ export interface RecordingEstimate {
   presets: Record<string, { label: string; bytes: number }>;
 }
 
+export interface Invitation {
+  id: string;
+  email: string | null;
+  role: 'teacher' | 'student' | 'parent';
+  subjects: Subject[];
+  hourlyRate: number | null;
+  gradeLevel: string | null;
+  note: string | null;
+  state: 'open' | 'accepted' | 'revoked' | 'expired';
+  expiresAt: string;
+  acceptedAt: string | null;
+  acceptedBy: string | null;
+  createdAt: string;
+}
+
 export interface Health {
   ok: boolean;
   /** Server clock, so a browser with a wrong clock does not misreport elapsed time. */

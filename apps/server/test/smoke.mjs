@@ -32,22 +32,53 @@ const pending = await call('/auth/login', { method:'POST', body:{ email:'paolo@l
 ok('pending account blocked', pending.status === 401 && /approval/i.test(pending.json?.error?.message ?? ''));
 ok('no password hash in payload', !JSON.stringify(owner).includes('scrypt$'));
 
-console.log('\n2. Registration is teacher/student only');
-const asOwner = await call('/auth/register', { method:'POST', body:{
-  name:'Sneaky Admin', email:`sneak${Date.now()}@x.com`, password:'password123', role:'owner' } });
-ok('role=owner rejected', asOwner.status === 400, JSON.stringify(asOwner.json));
+console.log('\n2. Accounts are made by invitation, not by signing up');
+const walkIn = await call('/auth/register', { method:'POST', body:{
+  name:'Walk In', email:`walkin${Date.now()}@x.com`, password:'password123' } });
+ok('registration without an invitation is refused',
+  walkIn.status === 400 || walkIn.status === 401, JSON.stringify(walkIn.json));
+
+const forged = await call('/auth/register', { method:'POST', body:{
+  token:'not-a-real-token', name:'Forged', email:`forged${Date.now()}@x.com`, password:'password123' } });
+ok('a made-up token is refused', forged.status === 401, JSON.stringify(forged.json));
+
+const asStudent = await call('/invitations', { method:'POST', token: amira.token, body:{ role:'teacher' } });
+ok('only the owner can invite', asStudent.status === 403, String(asStudent.status));
+
+const invited = await call('/invitations', { method:'POST', token: owner.token, body:{
+  role:'teacher', subjects:['math'], hourlyRate: 28.5, expiresInDays: 3 } });
+ok('the owner creates one and is given the link once',
+  invited.status === 201 && typeof invited.json.token === 'string', String(invited.status));
+ok('the link is not stored anywhere it can be read back',
+  !JSON.stringify((await call('/invitations', { token: owner.token })).json).includes(invited.json.token));
+
 const email = `newteach${Date.now()}@x.com`;
 const reg = await call('/auth/register', { method:'POST', body:{
-  name:'New Teacher', email, password:'password123', role:'teacher', subjects:['math'] } });
-ok('registration created as pending', reg.status === 201 && reg.json.user.status === 'pending');
-const preApproval = await call('/auth/login', { method:'POST', body:{ email, password:'password123' } });
-ok('cannot sign in before approval', preApproval.status === 401);
-const approve = await call(`/users/${reg.json.user.id}/approve`, { method:'PATCH', token: owner.token });
-ok('owner approves', approve.status === 200 && approve.json.user.status === 'active');
-const postApproval = await call('/auth/login', { method:'POST', body:{ email, password:'password123' } });
-ok('signs in after approval', postApproval.status === 200);
-const studentApprove = await call(`/users/${reg.json.user.id}/approve`, { method:'PATCH', token: amira.token });
-ok('student cannot approve (403)', studentApprove.status === 403);
+  token: invited.json.token, name:'New Teacher', email, password:'password123' } });
+ok('accepting it creates an active account, already approved',
+  reg.status === 201 && reg.json.user.status === 'active' && reg.json.user.role === 'teacher',
+  JSON.stringify(reg.json?.user ?? reg.json));
+ok('with the rate the owner set, not one they chose',
+  reg.json.user.hourlyRate === 28.5, String(reg.json?.user?.hourlyRate));
+ok('and they can sign in straight away',
+  (await call('/auth/login', { method:'POST', body:{ email, password:'password123' } })).status === 200);
+
+const reused = await call('/auth/register', { method:'POST', body:{
+  token: invited.json.token, name:'Second', email:`second${Date.now()}@x.com`, password:'password123' } });
+ok('one invitation makes one account', reused.status === 401, String(reused.status));
+
+const addressed = await call('/invitations', { method:'POST', token: owner.token, body:{
+  role:'student', email:`named${Date.now()}@x.com` } });
+const wrongPerson = await call('/auth/register', { method:'POST', body:{
+  token: addressed.json.token, name:'Someone Else', email:`other${Date.now()}@x.com`, password:'password123' } });
+ok('an addressed invitation is only for that address', wrongPerson.status === 401,
+  JSON.stringify(wrongPerson.json));
+
+const expired = await call('/invitations', { method:'POST', token: owner.token, body:{ role:'student' } });
+await call(`/invitations/${expired.json.invitation.id}`, { method:'DELETE', token: owner.token });
+const afterRevoke = await call('/auth/register', { method:'POST', body:{
+  token: expired.json.token, name:'Too Late', email:`late${Date.now()}@x.com`, password:'password123' } });
+ok('a withdrawn invitation stops working', afterRevoke.status === 401, String(afterRevoke.status));
 
 console.log('\n3. Library + multi-tenant isolation');
 const folders = await call('/library/folders', { token: daniel.token });

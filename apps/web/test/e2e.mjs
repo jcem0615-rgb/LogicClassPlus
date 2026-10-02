@@ -461,23 +461,32 @@ await owner2.waitForTimeout(2500);
 ok('and unlink them again',
   (await owner2.textContent('[data-child="kenji@logicclass.plus"]')).includes('Link')
   && !(await owner2.textContent('[data-child="kenji@logicclass.plus"]')).includes('Linked'));
-// Registering as a parent has to actually produce a parent. The role was
+// A parent account has to actually come out a parent. The role used to be
 // mapped with a `=== 'teacher' ? TEACHER : STUDENT` ternary, so every parent
-// who signed up became a student — invisible until they saw someone's
-// timetable. Signing up through the form is the only way to catch that.
-const signup = await open('signup');
+// became a student — invisible until they saw someone else's timetable. The
+// role now comes from the invitation, and this walks that path end to end.
+const parentInvite = await owner2.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/invitations`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+    body: JSON.stringify({ role: 'parent', expiresInDays: 2 }),
+  });
+  return (await r.json()).token;
+}, API);
+
 const addr = `guardian-${Date.now()}@example.test`;
-await signup.click('[data-mode="register"]');
-await signup.waitForSelector('input[name="name"]');
-await signup.fill('input[name="name"]', 'Priya Raman');
-await signup.fill('input[name="email"]', addr);
-await signup.fill('input[name="password"]', 'guardian1234');
-await signup.selectOption('select[name="role"]', 'parent');
-ok('the subject field goes away for a parent',
-  await signup.locator('select[name="subject"]').count() === 0);
-await signup.click('button[type="submit"]');
-await signup.waitForTimeout(2500);
-await signup.close();
+const guardian = await open('guardian');
+await guardian.goto(`${WEB}/join/${parentInvite}`, { waitUntil: 'networkidle' });
+await guardian.waitForSelector('[data-testid=join-form]', { timeout: 15_000 });
+ok('a parent invitation says it is a parent invitation',
+  /Parent invitation/i.test((await guardian.textContent('body')).replace(/\s+/g, ' ')));
+await guardian.fill('input[name=name]', 'Priya Raman');
+await guardian.fill('input[name=email]', addr);
+await guardian.fill('input[name=password]', 'guardian1234');
+await guardian.click('[data-testid=join-form] button[type=submit]');
+await guardian.waitForURL(/dashboard/, { timeout: 30_000 });
+await guardian.close();
 
 const owner3 = await open('owner3');
 await signIn(owner3, 'owner@logicclass.plus', 'admin1234');
@@ -487,8 +496,8 @@ const created = await owner3.evaluate(async ([api, email]) => {
   const { users } = await r.json();
   return users.find((u) => u.email === email) ?? null;
 }, [API, addr]);
-ok('a parent who signs up is a parent, awaiting approval',
-  created?.role === 'parent' && created?.status === 'pending',
+ok('an invited parent is a parent, and active without an approval step',
+  created?.role === 'parent' && created?.status === 'active',
   JSON.stringify(created && { role: created.role, status: created.status }));
 await owner3.close();
 
@@ -803,6 +812,108 @@ ok('an interrupted recording is offered back next time the room is opened',
 
 await recTeacher.close();
 await recStudent.close();
+
+console.log('\n13. Invitations replace signing up');
+
+const front = await open('front-door');
+const frontText = (await front.textContent('main').catch(() => front.textContent('body'))).replace(/\s+/g, ' ');
+ok('there is no sign-up form on the front door',
+  await front.locator('[data-mode=register]').count() === 0
+  && /by invitation/i.test(frontText), frontText.slice(0, 200));
+
+const openReg = await front.evaluate(async (api) => {
+  const r = await fetch(`${api}/api/auth/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Walk In', email: `walkin-${Date.now()}@example.test`, password: 'nopass1234' }),
+  });
+  return { status: r.status, body: await r.json() };
+}, API);
+ok('and the API will not create an account without one',
+  openReg.status === 400 || openReg.status === 401, JSON.stringify(openReg).slice(0, 180));
+await front.close();
+
+const admin2 = await open('admin-invites');
+await signIn(admin2, 'owner@logicclass.plus', 'admin1234');
+await admin2.goto(`${WEB}/admin`, { waitUntil: 'networkidle' });
+await admin2.waitForSelector('[data-testid=invite-form]', { timeout: 15_000 });
+
+const invitee = `teacher-${Date.now()}@example.test`;
+await admin2.selectOption('[data-testid=invite-role]', 'teacher');
+await admin2.fill('[data-testid=invite-form] input[name=email]', invitee);
+await admin2.fill('[data-testid=invite-form] input[name=rate]', '31.5');
+await admin2.click('[data-testid=invite-form] button[type=submit]');
+await admin2.waitForSelector('#invite-link', { timeout: 15_000 });
+const link = await admin2.inputValue('#invite-link');
+ok('the owner gets a link, once', /\/join\//.test(link), link.slice(0, 80));
+
+// The invited teacher opens it in a browser that has never signed in.
+const joiner = await open('joiner');
+await joiner.goto(link.replace(WEB, WEB), { waitUntil: 'networkidle' });
+await joiner.waitForSelector('[data-testid=join-form]', { timeout: 15_000 });
+const joinText = (await joiner.textContent('body')).replace(/\s+/g, ' ');
+ok('the link says what kind of account it makes', /Teaching invitation/i.test(joinText));
+ok('and is addressed to the person it was sent to',
+  (await joiner.inputValue('input[name=email]')) === invitee);
+
+await joiner.fill('input[name=name]', 'Priya Raman');
+await joiner.fill('input[name=password]', 'teachme1234');
+await joiner.click('[data-testid=join-form] button[type=submit]');
+await joiner.waitForURL(/dashboard/, { timeout: 30_000 });
+ok('accepting it signs them straight in — no approval queue', true);
+
+const mine = await joiner.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/auth/me`, { headers: { authorization: `Bearer ${token}` } });
+  return (await r.json()).user;
+}, API);
+ok('with the role and rate the owner chose, not one they picked',
+  mine.role === 'teacher' && mine.status === 'active' && mine.hourlyRate === 31.5,
+  JSON.stringify({ role: mine.role, status: mine.status, rate: mine.hourlyRate }));
+await joiner.close();
+
+// One link, one account.
+const reuse = await admin2.evaluate(async ([api, url]) => {
+  const token = url.split('/join/')[1];
+  const r = await fetch(`${api}/api/auth/register`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token, name: 'Second Person', email: `second-${Date.now()}@example.test`, password: 'second1234' }),
+  });
+  return { status: r.status, body: await r.json() };
+}, [API, link]);
+ok('the same link cannot be used twice', reuse.status === 401, JSON.stringify(reuse).slice(0, 160));
+
+// A withdrawn link stops working. Dismiss the first panel before making the
+// second one, or #invite-link is still showing the previous link when it is
+// read — which is what happened the first time this test ran.
+await admin2.click('[data-testid=fresh-invite] button:has-text("Done")');
+await admin2.waitForSelector('#invite-link', { state: 'detached', timeout: 10_000 });
+
+const second = `student-${Date.now()}@example.test`;
+await admin2.selectOption('[data-testid=invite-role]', 'student');
+await admin2.fill('[data-testid=invite-form] input[name=email]', second);
+await admin2.click('[data-testid=invite-form] button[type=submit]');
+await admin2.waitForSelector('#invite-link', { timeout: 15_000 });
+const link2 = await admin2.inputValue('#invite-link');
+ok('a second invitation is a different link', link2 !== link, `${link2 === link}`);
+await admin2.click('[data-testid=fresh-invite] button:has-text("Done")');
+await admin2.waitForTimeout(1200);
+await admin2.click('[data-revoke]');
+await admin2.waitForTimeout(2500);
+
+const withdrawn = await open('withdrawn');
+await withdrawn.goto(link2, { waitUntil: 'networkidle' });
+// Wait for the page to have decided, rather than catching it mid-fetch.
+await withdrawn.waitForFunction(
+  () => !/Checking the invitation/.test(document.body.textContent ?? ''),
+  undefined, { timeout: 20_000 },
+).catch(() => undefined);
+await withdrawn.waitForTimeout(800);
+const withdrawnText = (await withdrawn.textContent('body')).replace(/\s+/g, ' ');
+ok('a withdrawn link says so instead of making an account',
+  await withdrawn.locator('[data-testid=join-form]').count() === 0
+  && /withdrawn|not valid|expired/i.test(withdrawnText), withdrawnText.slice(0, 220));
+await withdrawn.close();
+await admin2.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');
