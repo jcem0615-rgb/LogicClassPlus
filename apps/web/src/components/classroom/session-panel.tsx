@@ -9,7 +9,9 @@ import { Button, Flag, Summary, SubjectPill } from '@/components/ui';
 import { deviceSpace, type DeviceSpace } from '@/lib/device-recording';
 import type { ClassSession, RecordingEstimate } from '@/lib/types';
 
-export function SessionPanel({ session, withWhom, isTeacher, transport, canRecord, recording, onRecording, onEnd }: {
+export function SessionPanel({
+  session, withWhom, isTeacher, transport, canRecord, recording, recordedBy, onRecording, onEnd,
+}: {
   session: ClassSession;
   /** Who the class is with: one person, or the roster of a group. */
   withWhom: string;
@@ -17,6 +19,8 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
   transport: 'sfu' | 'p2p' | null;
   canRecord: boolean;
   recording: boolean;
+  /** Everyone recording on their own device right now, by name. */
+  recordedBy: string[];
   onRecording: (active: boolean) => void;
   onEnd: (outcome: 'completed' | 'no_show') => void;
 }) {
@@ -159,8 +163,7 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
             </span>
           </div>
           <p className="text-[13px] text-ink-3">
-            <b>Record class</b> in the controls — the teacher's, like the one above — composites
-            everyone in the room here in the browser
+            <b>Record class</b> in the controls composites everyone in the room here in the browser
             and keeps the file on this machine — no media server and no bucket, so it works whether
             or not the ones above are configured. It is written out as the class runs, so a long
             lesson costs a few megabytes of memory rather than the whole recording, and what was
@@ -169,6 +172,17 @@ export function SessionPanel({ session, withWhom, isTeacher, transport, canRecor
               ? ' This browser has not promised to keep it, so leave the tab open until you stop.'
               : ''}
           </p>
+          <p className="text-[13px] text-ink-3">
+            Anyone in the class can keep their own copy this way — a student reviewing the lesson
+            later, or keeping a record of what was said. Everyone present is told who is recording,
+            and told again when they stop.
+          </p>
+          {recordedBy.length ? (
+            <div className="rounded-sm border border-line bg-warn-soft px-3 py-2 text-[13px]"
+              data-testid="who-is-recording">
+              Recording right now: {recordedBy.join(', ')}.
+            </div>
+          ) : null}
         </div>
       </section>
     </div>

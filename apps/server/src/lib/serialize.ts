@@ -24,6 +24,28 @@ export function publicUser(u: User) {
   };
 }
 
+/**
+ * A classmate, as another student may see them.
+ *
+ * Group classes put students in a room together, where they can already see
+ * each other's faces and the names on the tiles, so withholding the name
+ * only makes the roster say "Unknown" next to a person who is on screen.
+ * Everything else about them — their email above all — stays theirs.
+ */
+export const publicClassmate = (u: User) => ({
+  id: u.id,
+  email: '',
+  name: u.name,
+  role: u.role.toLowerCase(),
+  status: u.status.toLowerCase(),
+  locale: u.locale,
+  tz: u.timezone,
+  subjects: u.subjects.map((s) => s.toLowerCase()),
+  gradeLevel: u.gradeLevel ?? undefined,
+  seeded: u.seeded,
+  joinedAt: u.createdAt.toISOString(),
+});
+
 export const publicFolder = (f: Folder) => ({
   id: f.id, teacherId: f.teacherId, parentId: f.parentId ?? undefined,
   name: f.name, subject: f.subject.toLowerCase(), createdAt: f.createdAt.toISOString(),

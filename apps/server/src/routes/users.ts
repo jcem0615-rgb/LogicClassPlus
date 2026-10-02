@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../prisma.js';
 import { asyncRoute, validate } from '../lib/validate.js';
 import { badRequest, notFound } from '../lib/http-error.js';
-import { publicReset, publicUser } from '../lib/serialize.js';
+import { publicClassmate, publicReset, publicUser } from '../lib/serialize.js';
 import { childrenOf } from '../lib/scope.js';
 import { toCents } from '../lib/money.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
@@ -33,7 +33,23 @@ usersRouter.get('/', asyncRoute(async (req, res) => {
       where: { role: 'TEACHER', status: 'ACTIVE' },
       orderBy: { name: 'asc' },
     });
-    res.json({ users: [...teachers, ...owners, me].map(publicUser) });
+    /* Anyone sharing a class with them. Before group classes a student never
+       sat with another student, so the roster never had to carry one — and
+       in a group class every classmate showed up as "Unknown" beside the
+       face of someone sitting in the same room. */
+    const classmates = await prisma.user.findMany({
+      where: {
+        id: { not: me.id },
+        seats: { some: { session: { participants: { some: { studentId: me.id } } } } },
+      },
+      orderBy: { name: 'asc' },
+    });
+    res.json({
+      users: [
+        ...[...teachers, ...owners, me].map(publicUser),
+        ...classmates.map(publicClassmate),
+      ],
+    });
     return;
   }
   if (me.role === 'PARENT') {

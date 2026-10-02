@@ -676,8 +676,17 @@ ok('the other participant is told, and by whom',
 
 ok('and their screen shows the class is being recorded',
   /CLASS REC/.test((await recStudent.textContent('body')).replace(/\s+/g, ' ')));
-ok('a student has no button to record everyone else',
-  await recStudent.locator('#record-class').count() === 0);
+// A student keeping their own copy is the point of this, not a loophole in
+// it: everyone is told who is recording either way.
+ok('a student can record the class too',
+  await recStudent.locator('#record-class').count() === 1);
+await recStudent.click('#record-class');
+await recStudent.waitForTimeout(2500);
+ok('and the teacher is told that they are',
+  /recording the class on their own device/i.test(
+    (await recTeacher.textContent('body')).replace(/\s+/g, ' ')));
+const bothBadge = (await recTeacher.textContent('body')).replace(/\s+/g, ' ');
+ok('the badge counts both of them', /CLASS REC ×2/.test(bothBadge), bothBadge.slice(0, 160));
 
 // Long enough for several five-second chunks to land.
 await recTeacher.waitForTimeout(12_000);
@@ -733,10 +742,45 @@ ok('and the recording is marked finished rather than interrupted',
   file.complete && file.recordings >= 1, JSON.stringify(file));
 
 const stoppedNotice = (await recStudent.textContent('body')).replace(/\s+/g, ' ');
-ok('the room is told when it stops',
-  /Recording stopped/i.test(stoppedNotice), stoppedNotice.slice(-220));
-ok('and the recording badge clears for them',
-  !/CLASS REC/.test(stoppedNotice));
+ok('the room is told when someone stops', /stopped recording/i.test(stoppedNotice),
+  stoppedNotice.slice(-220));
+
+// The student is still going, so the room is still being recorded. A flag
+// rather than a list would have told everyone it was over.
+ok('the badge stays up while the other one is still recording',
+  /CLASS REC/.test((await recTeacher.textContent('body')).replace(/\s+/g, ' ')));
+
+await recStudent.click('#record-class');
+await recStudent.waitForTimeout(3500);
+ok('and clears once the last recorder stops',
+  !/CLASS REC/.test((await recTeacher.textContent('body')).replace(/\s+/g, ' ')));
+
+const studentCopy = await recStudent.evaluate(() => new Promise((resolve) => {
+  const req = indexedDB.open('logicclass-recordings');
+  req.onsuccess = () => {
+    const tx = req.result.transaction('chunks', 'readonly');
+    const all = tx.objectStore('chunks').getAll();
+    all.onsuccess = () => resolve(all.result.reduce((sum, r) => sum + r.blob.size, 0));
+    all.onerror = () => resolve(0);
+  };
+  req.onerror = () => resolve(0);
+}));
+ok('the student ends up with their own file, on their own device',
+  studentCopy > 10_000, `bytes: ${studentCopy}`);
+
+// A classmate in a group class is a person on screen, so the roster has to
+// know their name — and nothing else about them.
+const classmates = await recStudent.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/users`, { headers: { authorization: `Bearer ${token}` } });
+  const { users } = await r.json();
+  return users.filter((u) => u.role === 'student').map((u) => ({ name: u.name, email: u.email }));
+}, API);
+ok('a student sees who else is in their classes',
+  classmates.some((c) => c.name && c.name !== 'Unknown'), JSON.stringify(classmates));
+ok('but not their email addresses',
+  classmates.every((c) => c.email === '' || c.name === 'Amira Haddad'),
+  JSON.stringify(classmates));
 
 // What a crashed tab leaves behind is offered back on the way in.
 await recTeacher.evaluate(() => new Promise((resolve) => {

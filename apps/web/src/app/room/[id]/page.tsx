@@ -119,7 +119,15 @@ export default function RoomPage() {
   const [transport, setTransport] = useState<'sfu' | 'p2p' | null>(null);
   const [canRecord, setCanRecord] = useState(false);
   const [remotes, setRemotes] = useState<Remote[]>([]);
+  /** The media server's recording: one, started by the teacher. */
   const [roomRecording, setRoomRecording] = useState(false);
+  /**
+   * Everyone recording on their own device, by name. A set rather than a
+   * flag because several people record at once — a teacher keeping the class
+   * and a student keeping their own copy — and one of them stopping must not
+   * tell the room the recording has ended when it has not.
+   */
+  const [recorders, setRecorders] = useState<string[]>([]);
   const [localRecording, setLocalRecording] = useState(false);
   const [recordedBytes, setRecordedBytes] = useState(0);
   /** The server's ceiling, so a device recording stops where a hosted one would. */
@@ -148,7 +156,6 @@ export default function RoomPage() {
   const me = store.user;
   const isTeacher = Boolean(me && session && me.id === session.teacherId);
   const group = Boolean(session && session.capacity > 1);
-  const canRecordHere = isTeacher || me?.role === 'owner';
   /* Who the chat box and the empty-room caption talk about. In a group there
      is no "the other person", so it addresses the class instead. */
   const audience = !session ? 'the class'
@@ -331,7 +338,15 @@ export default function RoomPage() {
       void peers.current.get(key)?.handleSignal(message);
     });
     const offJoined = on<{ userId: string; name: string; socketId: string }>(
-      'classroom:peer-joined', (info) => connectToPeer(info),
+      'classroom:peer-joined', (info) => {
+        connectToPeer(info);
+        // They arrived after the announcement, so make it again. Walking into
+        // a room that is already being recorded and not being told is the
+        // same failure as not being told at all.
+        if (deviceRecorder.current) {
+          emit('classroom:recording:device', { sessionId: session.id, active: true });
+        }
+      },
     );
     const offLeft = on<{ userId: string; socketId?: string }>('classroom:peer-left', (info) => {
       if (info.socketId) { dropRemote(info.socketId); return; }
@@ -340,24 +355,29 @@ export default function RoomPage() {
     });
     const offRecording = on<{ status: string; bytes?: number; device?: boolean; by?: string }>(
       'classroom:recording', (info) => {
+        const who = info.by ?? 'Someone';
         if (info.status === 'started') {
-          setRoomRecording(true);
-          store.toast('warn', 'This class is being recorded',
-            info.device
-              ? `${info.by ?? 'Someone'} is recording the class on their own device.`
-              : 'Everyone in the class is told whenever recording starts.');
+          if (info.device) {
+            setRecorders((all) => (all.includes(who) ? all : [...all, who]));
+            store.toast('warn', 'This class is being recorded',
+              `${who} is recording the class on their own device.`);
+          } else {
+            setRoomRecording(true);
+            store.toast('warn', 'This class is being recorded',
+              'Everyone in the class is told whenever recording starts.');
+          }
         } else if (info.status === 'ready') {
           setRoomRecording(false);
           store.toast('ok', 'Recording saved', `${bytes(info.bytes ?? 0)} uploaded by the media server.`);
-        } else {
-          setRoomRecording(false);
+        } else if (info.device) {
           // Knowing when it stopped matters as much as knowing when it
           // started: it is the difference between "watch what you say" and
-          // "we are off the record now".
-          if (info.device) {
-            store.toast('ok', 'Recording stopped',
-              `${info.by ?? 'They'} stopped recording the class.`);
-          }
+          // "we are off the record now". Only for the person who stopped —
+          // anyone else still recording keeps the room on the record.
+          setRecorders((all) => all.filter((name) => name !== who));
+          store.toast('ok', `${who} stopped recording`, '');
+        } else {
+          setRoomRecording(false);
         }
       });
 
@@ -617,6 +637,11 @@ export default function RoomPage() {
     );
   }
 
+  const everyoneRecording = localRecording
+    ? [`${me?.name ?? 'You'} (you)`, ...recorders]
+    : recorders;
+  const recordingCount = everyoneRecording.length;
+
   const stateTone: Record<string, 'ok' | 'warn' | 'crit' | 'neutral'> = {
     connected: 'ok', connecting: 'warn', reconnecting: 'warn', failed: 'crit', closed: 'neutral',
   };
@@ -659,7 +684,14 @@ export default function RoomPage() {
             <div className="absolute right-2 top-2 flex gap-1.5">
               {!micOn ? <Pill tone="crit">Muted</Pill> : null}
               {localRecording ? <Pill tone="crit" dot>REC</Pill> : null}
-              {roomRecording ? <Pill tone="crit" dot>CLASS REC</Pill> : null}
+              {/* Your own recording never comes back to you — the relay
+                  skips the sender — so it is counted here rather than
+                  waiting for an echo that will not arrive. */}
+              {roomRecording || recordingCount ? (
+                <Pill tone="crit" dot>
+                  {recordingCount > 1 ? `CLASS REC ×${recordingCount}` : 'CLASS REC'}
+                </Pill>
+              ) : null}
             </div>
           </div>
 
@@ -695,10 +727,14 @@ export default function RoomPage() {
                 stream?.getVideoTracks().forEach((t) => { t.enabled = next; });
                 sfu.current?.setEnabled('video', next);
               }}>{camOn ? 'Camera off' : 'Camera on'}</Button>
-              {/* Recording the class captures everyone in it, so it is the
-                  teacher's to start — the same rule the hosted recording
-                  follows. Everybody is told either way. */}
-              {canRecordHere ? (
+              {/* Anyone in the class may keep their own copy: a student
+                  reviewing the lesson afterwards, and a record of what was
+                  said if it is ever needed. What makes that acceptable is
+                  not restricting it but announcing it — every person in the
+                  room is told who is recording, and told again when they
+                  stop. The hosted recording stays the teacher's, because
+                  that one spends the school's storage. */}
+              {true ? (
                 <>
                   <Button size="sm" variant={localRecording ? 'danger' : 'default'}
                     title="Records everyone in the room and keeps the file on this device"
@@ -838,6 +874,7 @@ export default function RoomPage() {
               <SessionPanel
                 session={session} withWhom={withWhom} isTeacher={isTeacher}
                 transport={transport} canRecord={canRecord} recording={roomRecording}
+                recordedBy={everyoneRecording}
                 onRecording={setRoomRecording}
                 onEnd={(outcome) => {
                   void store.run<unknown>(() => outcome === 'completed'
