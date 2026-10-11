@@ -13,6 +13,7 @@ import { toCents } from '../lib/money.js';
 import { publicMessage, publicRequest, publicSession } from '../lib/serialize.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
 import { notify } from '../services/notifications.js';
+import { classBookedEmail, sendEmail } from '../services/email.js';
 import { emitToSession, emitToUser } from '../realtime/gateway.js';
 
 export const classesRouter = Router();
@@ -131,6 +132,16 @@ classesRouter.patch('/requests/:id', requireRole('TEACHER'),
       userId: request.studentId, type: 'session', title: 'Class accepted',
       body: `${me.name} accepted “${request.topic}”.`, url: `/#/room/${session.id}`,
     });
+    // In the inbox as well as the bell: a class is a commitment at a time,
+    // and the bell is only seen by someone already looking at the app.
+    const student = await prisma.user.findUnique({ where: { id: request.studentId } });
+    if (student) {
+      void sendEmail(classBookedEmail({
+        to: student.email, name: student.name.split(' ')[0] ?? student.name,
+        topic: session.topic, startsAt: session.startsAt,
+        teacher: me.name, timezone: student.timezone,
+      }));
+    }
     emitToUser(request.studentId, 'classroom:accepted', publicSession(session));
 
     res.json({ request: publicRequest(updated), session: publicSession(session) });
@@ -350,6 +361,17 @@ classesRouter.post('/sessions/:id/book', requireRole('STUDENT'), asyncRoute(asyn
     body: `${me.name} booked a seat in “${session.topic}” — ${updated.participants.length} of ${session.capacity} filled.`,
     url: '/#/classes',
   });
+  const [booker, teacher] = await Promise.all([
+    prisma.user.findUnique({ where: { id: me.id } }),
+    prisma.user.findUnique({ where: { id: session.teacherId } }),
+  ]);
+  if (booker) {
+    void sendEmail(classBookedEmail({
+      to: booker.email, name: booker.name.split(' ')[0] ?? booker.name,
+      topic: session.topic, startsAt: session.startsAt,
+      teacher: teacher?.name ?? 'your teacher', timezone: booker.timezone,
+    }));
+  }
   emitToUser(session.teacherId, 'classroom:booked', publicSession(updated));
 
   res.status(201).json({ session: publicSession(updated) });

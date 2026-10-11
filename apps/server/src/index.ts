@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { env, isPushConfigured, isS3Configured, isStripeConfigured } from './env.js';
+import { env, isEmailConfigured, isPushConfigured, isS3Configured, isStripeConfigured } from './env.js';
 import { isRecordingConfigured } from './services/recording.js';
 import { isSpeechConfigured } from './services/speech.js';
 import { startRecordingCapSweeper, stopRecordingCapSweeper } from './services/recording-cap.js';
@@ -36,7 +36,8 @@ async function main(): Promise<void> {
       `  s3         ${flag(isS3Configured())} (falls back to ${env.LOCAL_UPLOAD_DIR})\n` +
       `  recording  ${env.RECORDING_PROVIDER === 'none' ? 'off — needs an SFU' : flag(isRecordingConfigured())}`
       + `${isRecordingConfigured() ? `, up to ${env.RECORDING_MAX_MINUTES} min each` : ''}\n` +
-      `  speech     ${flag(isSpeechConfigured())}\n`,
+      `  speech     ${flag(isSpeechConfigured())}\n` +
+      `  email      ${isEmailConfigured() ? `on via ${env.EMAIL_PROVIDER}` : 'not configured — links are logged, not sent'}\n`,
     );
   });
 

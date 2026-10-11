@@ -154,6 +154,9 @@ export interface Health {
   ok: boolean;
   /** Server clock, so a browser with a wrong clock does not misreport elapsed time. */
   time: string;
-  integrations: { stripe: boolean; webPush: boolean; s3: boolean; recording: boolean; speech: boolean };
+  integrations: {
+    stripe: boolean; webPush: boolean; s3: boolean; recording: boolean; speech: boolean;
+    email: boolean;
+  };
   policy: { uploadMaxBytes: number; payrollGraceMinutes: number; payrollLatePenalty: number; currency: string };
 }

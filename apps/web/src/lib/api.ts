@@ -148,7 +148,9 @@ export const api = {
   createInvitation: (input: {
     role: 'teacher' | 'student' | 'parent'; email?: string; subjects?: Subject[];
     hourlyRate?: number; gradeLevel?: string; note?: string; expiresInDays?: number;
-  }) => post<{ invitation: Invitation; token: string }>('/invitations', input),
+  }) => post<{
+    invitation: Invitation; token: string; emailed: boolean; emailReason: string | null;
+  }>('/invitations', input),
   revokeInvitation: (id: string) => del<{ invitation: Invitation }>(`/invitations/${id}`),
   logout: () => post<{ ok: true }>('/auth/logout'),
   me: () => get<{ user: User }>('/auth/me'),

@@ -4,7 +4,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import { ZodError } from 'zod';
 import { Prisma } from '@prisma/client';
-import { ALLOWED_ORIGINS, env, isPushConfigured, isS3Configured, isStripeConfigured } from './env.js';
+import { ALLOWED_ORIGINS, env, isEmailConfigured, isPushConfigured, isS3Configured, isStripeConfigured } from './env.js';
 import { HttpError } from './lib/http-error.js';
 import { attachUser } from './middleware/auth.js';
 import { authRouter } from './routes/auth.js';
@@ -58,6 +58,7 @@ export function createApp() {
         s3: isS3Configured(),
         recording: isRecordingConfigured(),
         speech: isSpeechConfigured(),
+        email: isEmailConfigured(),
       },
       policy: {
         uploadMaxBytes: env.UPLOAD_MAX_BYTES,

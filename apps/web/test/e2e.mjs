@@ -846,6 +846,13 @@ await admin2.waitForSelector('#invite-link', { timeout: 15_000 });
 const link = await admin2.inputValue('#invite-link');
 ok('the owner gets a link, once', /\/join\//.test(link), link.slice(0, 80));
 
+// With a provider configured the invitation is emailed; without one the
+// owner is told to send it. Either way the panel says which happened
+// rather than leaving them to guess whether anything went out.
+const delivery = (await admin2.textContent('[data-testid=invite-delivery]')).replace(/\s+/g, ' ');
+ok('and is told whether it was emailed or is theirs to send',
+  /Emailed to .*@|Send this to your new/.test(delivery), delivery.slice(0, 180));
+
 // The invited teacher opens it in a browser that has never signed in.
 const joiner = await open('joiner');
 await joiner.goto(link.replace(WEB, WEB), { waitUntil: 'networkidle' });

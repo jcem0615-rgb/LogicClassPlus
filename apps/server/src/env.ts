@@ -45,6 +45,19 @@ const schema = z.object({
   TURN_PASSWORD: z.string().optional(),
   TURN_TTL_SECONDS: z.coerce.number().int().positive().default(6 * 3600),
 
+  // --- email -------------------------------------------------------
+  /* 'none' prints the message and the link to the server log instead of
+     sending it, which is what local development and a demo want: the flow
+     still works, the Owner just copies the link as they do today. */
+  EMAIL_PROVIDER: z.enum(['none', 'resend']).default('none'),
+  RESEND_API_KEY: z.string().optional(),
+  RESEND_BASE_URL: z.string().default('https://api.resend.com'),
+  EMAIL_FROM: z.string().default('LogicClass+ <onboarding@resend.dev>'),
+  EMAIL_REPLY_TO: z.string().optional(),
+  /* Where the links in an email point. The API cannot guess the browser's
+     address, and a link to the wrong host is worse than no link. */
+  WEB_APP_URL: z.string().optional(),
+
   RECORDING_PROVIDER: z.enum(['none', 'livekit']).default('none'),
   RECORDING_PRESET: z.enum(['audio', '360p', '480p', '720p', '1080p']).default('720p'),
   /* The longest a single recording may run. Egress bills for as long as it is
@@ -81,6 +94,13 @@ if (!parsed.success) {
 export const env = parsed.data;
 
 export const ALLOWED_ORIGINS = env.WEB_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean);
+
+/** The address to build links to, for anything that leaves this server. */
+export const webAppUrl = (): string =>
+  (env.WEB_APP_URL ?? ALLOWED_ORIGINS[0] ?? 'http://localhost:4000').replace(/\/$/, '');
+
+export const isEmailConfigured = (): boolean =>
+  env.EMAIL_PROVIDER === 'resend' && Boolean(env.RESEND_API_KEY);
 
 /** Extensions the upload pipeline accepts. Anything else is rejected before a key is issued. */
 export const ALLOWED_EXTENSIONS = [

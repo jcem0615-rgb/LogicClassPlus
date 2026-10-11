@@ -4,6 +4,7 @@ import { prisma } from '../prisma.js';
 import { asyncRoute, validate } from '../lib/validate.js';
 import { badRequest, notFound } from '../lib/http-error.js';
 import { publicClassmate, publicReset, publicUser } from '../lib/serialize.js';
+import { passwordResetEmail, sendEmail } from '../services/email.js';
 import { childrenOf } from '../lib/scope.js';
 import { toCents } from '../lib/money.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
@@ -280,11 +281,30 @@ usersRouter.patch('/reset-requests/:id', requireRole('OWNER'),
     await prisma.passwordResetRequest.update({
       where: { id }, data: { resolvedById: actor(req).id },
     });
+
+    /* This comment used to say "the mailer sends this link". There was no
+       mailer: the Owner read the link off the screen and sent it himself.
+       Now it is actually sent, and when no provider is configured the
+       response says so instead of implying it went out. */
+    const subject = await prisma.user.findUnique({ where: { id: request.userId } });
+    const delivery = subject
+      ? await sendEmail(passwordResetEmail({
+        to: subject.email, token, name: subject.name.split(' ')[0] ?? subject.name,
+      }))
+      : { delivered: false, reason: 'That account no longer exists.' };
+
     await notify({
       userId: request.userId, type: 'password', title: 'Reset link sent',
-      body: 'Check your inbox — the link works once and expires in 30 minutes.',
+      body: delivery.delivered
+        ? 'Check your inbox — the link works once and expires in 30 minutes.'
+        : 'Your administrator has a link for you. It works once and expires in 30 minutes.',
     });
     const updated = await prisma.passwordResetRequest.findUniqueOrThrow({ where: { id } });
-    // The mailer sends this link; it is returned here so the flow is testable end to end.
-    res.json({ reset: publicReset(updated), resetLink: `/#/reset?token=${token}` });
+    res.json({
+      reset: publicReset(updated),
+      // Still returned, because without a provider this is the only copy.
+      resetLink: `/#/reset?token=${token}`,
+      emailed: delivery.delivered,
+      emailReason: delivery.reason ?? null,
+    });
   }));

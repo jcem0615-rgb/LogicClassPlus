@@ -11,6 +11,7 @@ import { actor, requireAuth, requireRole } from '../middleware/auth.js';
 import { visibleStudentIds } from '../lib/scope.js';
 import { createInvoiceWithNumber, stripe } from '../services/billing.js';
 import { notify } from '../services/notifications.js';
+import { invoiceEmail, sendEmail } from '../services/email.js';
 
 export const billingRouter = Router();
 billingRouter.use(requireAuth, requireRole('OWNER', 'STUDENT', 'PARENT'));
@@ -61,6 +62,12 @@ billingRouter.post('/invoices', requireRole('OWNER'), validate(createInvoice),
       body: `${invoice.currency} ${fromCents(amountCents).toFixed(2)} due ${input.dueAt.toDateString()}.`,
       url: '/#/billing',
     });
+    void sendEmail(invoiceEmail({
+      to: student.email, name: student.name.split(' ')[0] ?? student.name,
+      number: invoice.number,
+      amount: `${invoice.currency} ${fromCents(amountCents).toFixed(2)}`,
+      dueAt: input.dueAt,
+    }));
 
     res.status(201).json({ invoice: publicInvoice(invoice) });
   }));
@@ -125,6 +132,12 @@ billingRouter.post('/invoices/for-class/:sessionId', requireRole('OWNER'),
         body: `${invoice.currency} ${fromCents(invoice.amountCents).toFixed(2)} for your seat in “${session.topic}”.`,
         url: '/#/billing',
       });
+      void sendEmail(invoiceEmail({
+        to: seat.student.email, name: seat.student.name.split(' ')[0] ?? seat.student.name,
+        number: invoice.number,
+        amount: `${invoice.currency} ${fromCents(invoice.amountCents).toFixed(2)}`,
+        dueAt,
+      }));
     }
 
     res.status(created.length ? 201 : 200).json({
@@ -169,14 +182,25 @@ billingRouter.post('/invoices/:id/pay', requireRole('STUDENT'), asyncRoute(async
 }));
 
 billingRouter.post('/invoices/:id/remind', requireRole('OWNER'), asyncRoute(async (req, res) => {
-  const invoice = await prisma.invoice.findUnique({ where: { id: String(req.params['id']) } });
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: String(req.params['id']) }, include: { student: true },
+  });
   if (!invoice) throw notFound('That invoice no longer exists.');
   await notify({
     userId: invoice.studentId, type: 'billing', title: 'Payment reminder',
     body: `${invoice.number} · ${invoice.currency} ${fromCents(invoice.amountCents).toFixed(2)} is due ${invoice.dueAt.toDateString()}.`,
     url: '/#/billing',
   });
-  res.json({ ok: true });
+  // A reminder that only appears inside the app reaches the people who are
+  // already paying attention, which is not who a reminder is for.
+  const delivery = await sendEmail(invoiceEmail({
+    to: invoice.student.email,
+    name: invoice.student.name.split(' ')[0] ?? invoice.student.name,
+    number: invoice.number,
+    amount: `${invoice.currency} ${fromCents(invoice.amountCents).toFixed(2)}`,
+    dueAt: invoice.dueAt,
+  }));
+  res.json({ ok: true, emailed: delivery.delivered, emailReason: delivery.reason ?? null });
 }));
 
 /** Manual settlement, for cash or a bank transfer taken outside Stripe. */

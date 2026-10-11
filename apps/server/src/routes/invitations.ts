@@ -21,6 +21,7 @@ import { asyncRoute, validate } from '../lib/validate.js';
 import { badRequest, notFound } from '../lib/http-error.js';
 import { toCents, fromCents } from '../lib/money.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
+import { invitationEmail, sendEmail, type Delivery } from '../services/email.js';
 
 export const invitationsRouter = Router();
 
@@ -116,8 +117,28 @@ invitationsRouter.post('/', validate(createInvite), asyncRoute(async (req, res) 
     },
   });
 
+  /* Sent for them when there is an address and a provider; otherwise the
+     Owner is told plainly that the link is theirs to pass on, which is what
+     they were doing for every invitation before this existed. */
+  let delivery: Delivery = { delivered: false, reason: 'No address, so there was nobody to send it to.' };
+  if (input.email) {
+    delivery = await sendEmail(invitationEmail({
+      to: input.email,
+      role: invite.role.toLowerCase(),
+      token,
+      note: invite.note,
+      invitedBy: me.name,
+      expiresAt: invite.expiresAt,
+    }));
+  }
+
   // The only time the token leaves this server.
-  res.status(201).json({ invitation: publicInvite(invite), token });
+  res.status(201).json({
+    invitation: publicInvite(invite),
+    token,
+    emailed: delivery.delivered,
+    emailReason: delivery.reason ?? null,
+  });
 }));
 
 invitationsRouter.get('/', asyncRoute(async (_req, res) => {

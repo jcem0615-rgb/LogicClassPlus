@@ -362,9 +362,16 @@ function ClassMonitor() {
 function InviteCard() {
   const store = useStore();
   const [invites, setInvites] = useState<Invitation[]>([]);
-  const [fresh, setFresh] = useState<{ link: string; role: string; email: string | null } | null>(null);
+  const [fresh, setFresh] = useState<{
+    link: string; role: string; email: string | null; emailed: boolean; reason: string | null;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
   const [role, setRole] = useState<'teacher' | 'student' | 'parent'>('teacher');
+  const [emailOn, setEmailOn] = useState(false);
+
+  useEffect(() => {
+    void api.health().then((h) => setEmailOn(Boolean(h.integrations.email))).catch(() => undefined);
+  }, []);
 
   const load = useCallback(async () => {
     try { setInvites((await api.invitations()).invitations); } catch { /* shown empty */ }
@@ -392,6 +399,8 @@ function InviteCard() {
         link: `${window.location.origin}/join/${made.token}`,
         role,
         email: made.invitation.email,
+        emailed: made.emailed,
+        reason: made.emailReason,
       });
       form.reset();
       await load();
@@ -454,7 +463,9 @@ function InviteCard() {
         <div className="flex items-center justify-between gap-3">
           <span className="text-[13px] text-ink-3">
             Whoever opens the link sets their own password and is active immediately — inviting
-            them is the approval.
+            them is the approval. {emailOn
+              ? 'With an address, the invitation is emailed for you.'
+              : 'No email provider is set up, so the link is yours to send.'}
           </span>
           <Button type="submit" variant="primary" disabled={busy}>Create invitation</Button>
         </div>
@@ -463,9 +474,16 @@ function InviteCard() {
       {fresh ? (
         <div className="mx-[18px] mb-[18px] flex flex-col gap-2 rounded-sm border border-line bg-warn-soft p-3.5"
           data-testid="fresh-invite">
-          <div className="text-[13px]">
-            Send this to your new {fresh.role}{fresh.email ? ` at ${fresh.email}` : ''}. It is shown
-            once — the server keeps only a hash of it, so this is the only time it can be read.
+          <div className="text-[13px]" data-testid="invite-delivery">
+            {fresh.emailed
+              ? `Emailed to ${fresh.email}. The link below is the same one, in case they need it `
+                + 'again — it is shown once, because the server keeps only a hash of it.'
+              : `Send this to your new ${fresh.role}${fresh.email ? ` at ${fresh.email}` : ''}. `
+                + 'It is shown once — the server keeps only a hash of it, so this is the only '
+                + 'time it can be read.'}
+            {!fresh.emailed && fresh.reason ? (
+              <span className="mt-1 block text-ink-3">{fresh.reason}</span>
+            ) : null}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <input readOnly value={fresh.link} id="invite-link"
