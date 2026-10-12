@@ -654,13 +654,36 @@ await signIn(recTeacher, 'daniel@logicclass.plus', 'teach1234');
 const recStudent = await open('rec-student');
 await signIn(recStudent, 'amira@logicclass.plus', 'learn1234');
 
-const recSessionId = await recTeacher.evaluate(async (api) => {
-  const token = localStorage.getItem('logicclass.token');
-  const r = await fetch(`${api}/api/classes/sessions`, { headers: { authorization: `Bearer ${token}` } });
-  const { sessions } = await r.json();
-  const live = sessions.find((s) => s.status === 'scheduled' || s.status === 'live');
-  return live?.id ?? sessions[0]?.id ?? null;
-}, API);
+/* A lesson made for this test, rather than whichever scheduled class happens
+   to be first in the teacher's list. That heuristic quietly depended on the
+   order the API returned sessions in, and picked a group class the student
+   had no seat in the moment that order changed — so the student was shown
+   "not your classroom" and the failure pointed at the recording code. */
+const recSessionId = await (async () => {
+  const reqId = await recStudent.evaluate(async (api) => {
+    const token = localStorage.getItem('logicclass.token');
+    const call = (path, options = {}) => fetch(api + '/api' + path, {
+      method: options.method || 'GET',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    }).then((r) => r.json());
+    const users = (await call('/users')).users;
+    const daniel = users.find((u) => u.email === 'daniel@logicclass.plus');
+    const r = await call('/classes/requests', { method: 'POST', body: {
+      teacherId: daniel.id, subject: 'math', topic: 'Recorded lesson ' + Date.now(),
+      requestedFor: new Date(Date.now() + 3600e3).toISOString(), minutes: 60 } });
+    return r.request.id;
+  }, API);
+  return recTeacher.evaluate(async ({ api, reqId }) => {
+    const token = localStorage.getItem('logicclass.token');
+    const r = await fetch(api + '/api/classes/requests/' + reqId, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: JSON.stringify({ decision: 'accept' }),
+    });
+    return (await r.json()).session.id;
+  }, { api: API, reqId });
+})();
 
 for (const page of [recTeacher, recStudent]) {
   await page.goto(`${WEB}/room/${recSessionId}`, { waitUntil: 'networkidle' });
@@ -1034,17 +1057,265 @@ ok('a group class says how many seats were taken and how many turned up',
   await watcher.evaluate(() => [...document.querySelectorAll('[data-class-row]')]
     .some((r) => /group ·/.test(r.textContent))));
 
-// Filtering is the point of a monitor: find one class among hundreds.
-const rowsAll = await watcher.locator('[data-class-row]').count();
+/* Filtering is the point of a monitor: find one class among hundreds. The
+   check is what is left rather than how much fewer there is of it — the table
+   draws at most 60 rows, so on a busy database both counts are 60 and a
+   shrinking-count assertion quietly stops testing anything. */
 await watcher.fill('#class-search', 'Kenji');
 await watcher.waitForTimeout(1200);
 const rowsFiltered = await watcher.locator('[data-class-row]').count();
-ok('filtering narrows it to one person',
-  rowsFiltered > 0 && rowsFiltered < rowsAll, `${rowsAll} -> ${rowsFiltered}`);
+ok('filtering finds that person\u2019s classes', rowsFiltered > 0, `${rowsFiltered} rows`);
 const filtered = await watcher.evaluate(() => [...document.querySelectorAll('[data-class-row]')]
   .every((r) => /Kenji/.test(r.textContent)));
 ok('and every row left is theirs', filtered);
+
+await watcher.fill('#class-search', 'Nobody Has This Name');
+await watcher.waitForTimeout(1200);
+ok('a name nobody has leaves nothing behind',
+  await watcher.locator('[data-class-row]').count() === 0);
 await watcher.close();
+
+/** A scheduled private lesson for any student, through the API. */
+async function makeLessonFor(email, password, topic, inHours) {
+  const r = await fetch(`${API}/api/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  const studentToken = (await r.json()).token;
+  const tr = await fetch(`${API}/api/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'daniel@logicclass.plus', password: 'teach1234' }),
+  });
+  const teacherAuth = await tr.json();
+  const made = await fetch(`${API}/api/classes/requests`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${studentToken}` },
+    body: JSON.stringify({
+      teacherId: teacherAuth.user.id, subject: 'math', topic,
+      requestedFor: new Date(Date.now() + inHours * 3600e3).toISOString(), minutes: 60,
+    }),
+  });
+  const requestId = (await made.json()).request.id;
+  const accepted = await fetch(`${API}/api/classes/requests/${requestId}`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${teacherAuth.token}` },
+    body: JSON.stringify({ decision: 'accept' }),
+  });
+  return (await accepted.json()).session.id;
+}
+
+console.log('\n16. Calling a class off, and moving one');
+
+/* Two browsers: the teacher who cancels and the student who finds out. The
+   student's tab is never reloaded, because the thing worth checking is that
+   a timetable someone is already looking at stops showing a class that is
+   not happening. */
+const cancelTeacher = await open('cancel-teacher');
+await signIn(cancelTeacher, 'daniel@logicclass.plus', 'teach1234');
+const cancelStudent = await open('cancel-student');
+await signIn(cancelStudent, 'kenji@logicclass.plus', 'learn1234');
+
+/** A private lesson between these two, set up through the API. */
+const makeLesson = async (topic, inHours) => {
+  const reqId = await cancelStudent.evaluate(async ({ api, topic, inHours }) => {
+    const token = localStorage.getItem('logicclass.token');
+    const call = (path, options = {}) => fetch(api + '/api' + path, {
+      method: options.method || 'GET',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: options.body ? JSON.stringify(options.body) : undefined,
+    }).then((r) => r.json());
+    const users = (await call('/users')).users;
+    const daniel = users.find((u) => u.email === 'daniel@logicclass.plus');
+    const r = await call('/classes/requests', { method: 'POST', body: {
+      teacherId: daniel.id, subject: 'math', topic,
+      requestedFor: new Date(Date.now() + inHours * 3600e3).toISOString(), minutes: 60 } });
+    return r.request.id;
+  }, { api: API, topic, inHours });
+  return cancelTeacher.evaluate(async ({ api, reqId }) => {
+    const token = localStorage.getItem('logicclass.token');
+    const r = await fetch(api + '/api/classes/requests/' + reqId, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+      body: JSON.stringify({ decision: 'accept' }),
+    });
+    return (await r.json()).session.id;
+  }, { api: API, reqId });
+};
+
+const topicOff = 'Cancel from the browser ' + Date.now();
+const lessonOff = await makeLesson(topicOff, 30);
+
+/* The student is parked on their timetable *before* the class is cancelled,
+   and never reloaded afterwards: the claim worth testing is that the page
+   someone checks before setting off stops showing a class that is not
+   happening, on its own. */
+await cancelStudent.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await cancelStudent.waitForSelector(`[data-cancel="${lessonOff}"]`, { timeout: 15_000 });
+ok('the student is on their own timetable, looking at the class',
+  cancelStudent.url().endsWith('/classes'), cancelStudent.url());
+
+await cancelTeacher.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await cancelTeacher.waitForSelector(`[data-cancel="${lessonOff}"]`, { timeout: 15_000 });
+ok('the teacher is offered Cancel and Move on their own class',
+  await cancelTeacher.locator(`[data-move="${lessonOff}"]`).count() === 1);
+
+await cancelTeacher.click(`[data-cancel="${lessonOff}"]`);
+await cancelTeacher.waitForSelector('#cancel-reason', { timeout: 10_000 });
+ok('cancelling asks for a reason rather than just confirming',
+  (await cancelTeacher.textContent('body')).includes('Reason'));
+await cancelTeacher.fill('#cancel-reason', 'Clashes with a school exam.');
+await cancelTeacher.click('[data-confirm-cancel]');
+await cancelTeacher.waitForTimeout(2500);
+
+const teacherText = (await cancelTeacher.textContent('main')).replace(/\s+/g, ' ');
+ok('the class is marked cancelled on the spot', /Cancelled/.test(teacherText), teacherText.slice(0, 200));
+ok('with the reason next to it', teacherText.includes('Clashes with a school exam'));
+ok('and it no longer offers a way in',
+  await cancelTeacher.evaluate((id) => {
+    const row = document.querySelector(`[data-cancelled="${id}"]`)?.closest('.border-l-2');
+    return row ? !/Join/.test(row.textContent) : false;
+  }, lessonOff));
+
+// No reload and no instruction to refresh — just the socket event arriving.
+let liveUpdate = false;
+for (let i = 0; i < 30 && !liveUpdate; i += 1) {
+  liveUpdate = await cancelStudent.evaluate((id) =>
+    Boolean(document.querySelector(`[data-cancelled="${id}"]`)), lessonOff);
+  if (!liveUpdate) await cancelStudent.waitForTimeout(500);
+}
+ok('the socket brings the cancellation to an open timetable', liveUpdate);
+const pupilRow = (await cancelStudent.evaluate((id) => {
+  const el = document.querySelector(`[data-cancelled="${id}"]`)?.closest('.border-l-2');
+  return el ? el.textContent : '';
+}, lessonOff)).replace(/\s+/g, ' ');
+ok('the student\u2019s open timetable updates itself, with no reload',
+  pupilRow.includes(topicOff), pupilRow.slice(0, 200));
+ok('and shows it as cancelled, with the reason the teacher typed',
+  /Cancelled/.test(pupilRow) && pupilRow.includes('Clashes with a school exam'),
+  pupilRow.slice(0, 300));
+ok('and takes the Join button away from them',
+  !/Join/.test(pupilRow), pupilRow.slice(0, 200));
+ok('the student is not offered Cancel on a class that is already off',
+  await cancelStudent.locator(`[data-cancel="${lessonOff}"]`).count() === 0);
+
+// Following an emailed link to a cancelled class says so, rather than
+// offering a camera check for a lesson nobody is coming to.
+await cancelStudent.goto(`${WEB}/room/${lessonOff}`, { waitUntil: 'networkidle' });
+await cancelStudent.waitForTimeout(2000);
+ok('the classroom itself says the class was cancelled',
+  (await cancelStudent.textContent('main')).includes('This class was cancelled'),
+  (await cancelStudent.textContent('main')).slice(0, 160));
+
+console.log('\n17. A student cancels their own lesson, and withdraws a request');
+const topicMine = 'Student cancels this ' + Date.now();
+const lessonMine = await makeLesson(topicMine, 40);
+await cancelStudent.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await cancelStudent.waitForSelector(`[data-cancel="${lessonMine}"]`, { timeout: 15_000 });
+ok('a student may call off their own private lesson',
+  await cancelStudent.locator(`[data-cancel="${lessonMine}"]`).count() === 1);
+ok('but is not offered the teacher’s Move button',
+  await cancelStudent.locator(`[data-move="${lessonMine}"]`).count() === 0);
+await cancelStudent.click(`[data-cancel="${lessonMine}"]`);
+await cancelStudent.waitForSelector('[data-confirm-cancel]', { timeout: 10_000 });
+await cancelStudent.click('[data-confirm-cancel]');
+await cancelStudent.waitForTimeout(2500);
+ok('and it goes through', await cancelStudent.evaluate((id) =>
+  Boolean(document.querySelector(`[data-cancelled="${id}"]`)), lessonMine));
+
+// The other half: a request nobody has answered yet.
+const pendingId = await cancelStudent.evaluate(async ({ api }) => {
+  const token = localStorage.getItem('logicclass.token');
+  const call = (path, options = {}) => fetch(api + '/api' + path, {
+    method: options.method || 'GET',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+  }).then((r) => r.json());
+  const users = (await call('/users')).users;
+  const daniel = users.find((u) => u.email === 'daniel@logicclass.plus');
+  const r = await call('/classes/requests', { method: 'POST', body: {
+    teacherId: daniel.id, subject: 'english', topic: 'Withdraw from the browser',
+    requestedFor: new Date(Date.now() + 45 * 3600e3).toISOString(), minutes: 60 } });
+  return r.request.id;
+}, { api: API });
+await cancelStudent.reload({ waitUntil: 'networkidle' });
+await cancelStudent.waitForSelector(`[data-withdraw="${pendingId}"]`, { timeout: 15_000 });
+ok('a pending request offers Withdraw', true);
+await cancelStudent.click(`[data-withdraw="${pendingId}"]`);
+await cancelStudent.waitForTimeout(2500);
+ok('withdrawing it leaves nothing to withdraw again',
+  await cancelStudent.locator(`[data-withdraw="${pendingId}"]`).count() === 0);
+
+console.log('\n18. A parent is shown the class, not the controls');
+{
+  /* The parent view borrowed another role's wording for these rows — the
+     Owner's on the dashboard, the student's on the classes page. That was
+     harmless while the row only described a class. Once it grew buttons, a
+     parent was being offered Cancel on their child's private lesson, which
+     the server refuses: the only thing the button could do was mislead.
+
+     The assertion needs a *scheduled* class of the child's to be sure it is
+     testing anything, since the controls never appear on a class that is
+     already running. */
+  const parentsChildLesson = await makeLessonFor('amira@logicclass.plus', 'learn1234',
+    'Parent looks at this ' + Date.now(), 60);
+  const guardian = await open('parent-controls');
+  await signIn(guardian, 'nadia@logicclass.plus', 'parent1234');
+  await guardian.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+  await guardian.waitForTimeout(2500);
+
+  const childRow = await guardian.evaluate((id) => {
+    const rows = [...document.querySelectorAll('.border-l-2')];
+    const row = rows.find((r) => r.querySelector(`[data-cancel="${id}"], [data-move="${id}"]`))
+      ?? rows.find((r) => r.textContent.includes('Parent looks at this'));
+    return row ? row.innerHTML : '';
+  }, parentsChildLesson);
+  ok('the parent can see their child\u2019s scheduled class',
+    childRow.includes('Parent looks at this'), childRow.slice(0, 160));
+  ok('but is offered no Cancel button on it',
+    await guardian.locator(`[data-cancel="${parentsChildLesson}"]`).count() === 0);
+  ok('and no Move button',
+    await guardian.locator(`[data-move="${parentsChildLesson}"]`).count() === 0);
+  ok('and no way into the classroom either', !/>Join</.test(childRow), childRow.slice(0, 200));
+  await guardian.close();
+}
+
+console.log('\n19. Moving a class tells the student the new time');
+const topicMove = 'Move from the browser ' + Date.now();
+const lessonMove = await makeLesson(topicMove, 50);
+await cancelTeacher.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await cancelTeacher.waitForSelector(`[data-move="${lessonMove}"]`, { timeout: 15_000 });
+await cancelTeacher.click(`[data-move="${lessonMove}"]`);
+await cancelTeacher.waitForSelector('#move-when', { timeout: 10_000 });
+
+const bookedFor = await cancelTeacher.inputValue('#move-when');
+const next = new Date(Date.now() + 80 * 3600e3);
+const local = new Date(next.getTime() - next.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+ok('the form opens on the time it is currently booked for', Boolean(bookedFor), String(bookedFor));
+await cancelTeacher.fill('#move-when', local);
+await cancelTeacher.selectOption('[data-testid=move-form] select[name=minutes]', '90');
+await cancelTeacher.click('[data-testid=move-form] button[type=submit]');
+await cancelTeacher.waitForTimeout(2500);
+
+ok('the row says where it moved from',
+  await cancelTeacher.evaluate((id) => Boolean(document.querySelector(`[data-moved="${id}"]`)), lessonMove));
+ok('and the new length is shown',
+  await cancelTeacher.evaluate((id) => {
+    const el = document.querySelector(`[data-moved="${id}"]`)?.closest('.grid');
+    return el ? /90 min/.test(el.textContent) : false;
+  }, lessonMove));
+
+await cancelStudent.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await cancelStudent.waitForTimeout(2000);
+ok('the student sees the move too',
+  await cancelStudent.evaluate((id) => Boolean(document.querySelector(`[data-moved="${id}"]`)), lessonMove));
+
+// A class moved to a time nobody has reached yet is still joinable later, so
+// it must stay on the books rather than being filed under history.
+ok('and it is still an upcoming class, not history',
+  (await cancelStudent.textContent('main')).includes(topicMove));
+
+await cancelTeacher.close();
+await cancelStudent.close();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');

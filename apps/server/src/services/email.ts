@@ -169,6 +169,70 @@ export function classBookedEmail(input: {
   };
 }
 
+/**
+ * A class that is not happening. This one matters more than the booking
+ * confirmation did: somebody is otherwise going to sit in front of a camera
+ * at four o'clock waiting for a lesson that was called off.
+ */
+export function classCancelledEmail(input: {
+  to: string; name: string; topic: string; startsAt: Date; timezone: string;
+  cancelledBy: string; reason?: string | null; shortNotice: boolean;
+  /** A teacher is not told to go and book another lesson with themselves. */
+  audience: 'student' | 'teacher';
+}): Mail {
+  const when = input.startsAt.toLocaleString('en-GB', {
+    dateStyle: 'full', timeStyle: 'short', timeZone: input.timezone,
+  });
+  const lines = [
+    `${input.name}, your class on ${when} has been cancelled.`,
+    `${input.topic} — cancelled by ${input.cancelledBy}.`,
+    ...(input.reason ? [`Reason given: “${input.reason}”`] : []),
+    ...(input.shortNotice
+      ? ['This was cancelled at short notice. If that is a problem, reply to this'
+        + ' message and the school will see it.']
+      : []),
+    input.audience === 'teacher'
+      ? 'That slot is free on your schedule again.'
+      : 'Nothing is expected of you — there is no class to join. You can book another'
+        + ' time whenever suits.',
+  ];
+  return {
+    to: input.to,
+    subject: `Cancelled: ${input.topic}`,
+    text: `${lines.join('\n\n')}\n\n${webAppUrl()}/classes\n`,
+    html: layout('Your class has been cancelled', lines, {
+      label: input.audience === 'teacher' ? 'See my schedule' : 'Book another time',
+      url: `${webAppUrl()}/classes`,
+    }),
+  };
+}
+
+/** A class that is still happening, at a different time. */
+export function classMovedEmail(input: {
+  to: string; name: string; topic: string; from: Date; to_: Date; timezone: string;
+  movedBy: string; minutes: number;
+}): Mail {
+  const fmt = (d: Date) => d.toLocaleString('en-GB', {
+    dateStyle: 'full', timeStyle: 'short', timeZone: input.timezone,
+  });
+  const lines = [
+    `${input.name}, your class has been moved.`,
+    `${input.topic} — now ${fmt(input.to_)} (${input.timezone}), ${input.minutes} minutes.`,
+    `It was booked for ${fmt(input.from)}.`,
+    `Moved by ${input.movedBy}. If the new time does not work, say so and it can be`
+    + ' moved again or cancelled.',
+  ];
+  return {
+    to: input.to,
+    // The new time in the subject line: a reader scanning their inbox should
+    // not have to open the message to learn the one thing that changed.
+    subject: `Moved to ${fmt(input.to_)}: ${input.topic}`,
+    text: `${lines.join('\n\n')}\n\n${webAppUrl()}/classes\n`,
+    html: layout('Your class has moved', lines,
+      { label: 'See my classes', url: `${webAppUrl()}/classes` }),
+  };
+}
+
 export function invoiceEmail(input: {
   to: string; name: string; number: string; amount: string; dueAt: Date;
 }): Mail {

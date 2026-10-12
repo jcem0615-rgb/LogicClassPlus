@@ -19,8 +19,13 @@ export default function BillingPage() {
   /* Group classes the Owner can still bill. A class is worth showing until
      every seat in it has an invoice, which the server works out — pressing
      the button twice bills nobody twice. */
+  /* A cancelled class is left out: the server refuses to invoice one, so
+     offering the button here is a promise the API will not keep — and a
+     cancelled class with seats booked is exactly the sort of row that would
+     otherwise sit at the top of this list asking to be charged for. */
   const groups = store.sessions
-    .filter((s) => s.capacity > 1 && s.booked > 0 && s.seatPrice != null)
+    .filter((s) => s.capacity > 1 && s.booked > 0 && s.seatPrice != null
+      && s.status !== 'cancelled')
     .sort((a, b) => new Date(b.startsAt).getTime() - new Date(a.startsAt).getTime());
 
   async function billClass(session: ClassSession) {

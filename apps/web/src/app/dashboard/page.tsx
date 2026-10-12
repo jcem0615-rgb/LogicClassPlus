@@ -361,7 +361,7 @@ function ParentHome() {
               <Stat k="Upcoming" v={String(upcoming.length)} />
             </div>
             {upcoming.length ? upcoming.slice(0, 4).map((s) => (
-              <TimelineItem key={s.id} session={s} as="owner" />
+              <TimelineItem key={s.id} session={s} as="parent" />
             )) : (
               <div className="border-t border-line px-[18px] py-3.5 text-[13px] text-ink-3">
                 Nothing booked for {child.name.split(' ')[0]} right now.

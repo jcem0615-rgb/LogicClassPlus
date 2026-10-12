@@ -233,6 +233,18 @@ export const api = {
   leaveSession: (id: string) => post<{ session: ClassSession }>(`/classes/sessions/${id}/leave`),
   completeSession: (id: string, outcome: 'completed' | 'no_show') =>
     post<{ session: ClassSession }>(`/classes/sessions/${id}/complete`, { outcome }),
+  /* The response carries what cancelling cost as well as the class itself:
+     an invoice already raised, or a teacher already clocked in, is something
+     the person who cancelled should see on the screen where they did it. */
+  cancelSession: (id: string, reason?: string) =>
+    post<{
+      session: ClassSession; shortNotice: boolean;
+      invoicedLines: number; teacherClockedIn: boolean;
+    }>(`/classes/sessions/${id}/cancel`, reason ? { reason } : {}),
+  rescheduleSession: (id: string, input: { startsAt: string; minutes?: number }) =>
+    patch<{ session: ClassSession }>(`/classes/sessions/${id}/schedule`, input),
+  withdrawRequest: (id: string) =>
+    del<{ request: ClassRequest }>(`/classes/requests/${id}`),
   saveDocument: (id: string, kind: 'board' | 'document' | 'equation' | 'annotation', content: string) =>
     put<{ kind: string; updatedAt: string }>(`/classes/sessions/${id}/documents`, { kind, content }),
   sendMessage: (id: string, text: string) =>

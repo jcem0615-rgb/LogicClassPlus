@@ -101,6 +101,7 @@ model User {
   requestsAsTeacher ClassRequest[]         @relation("TeacherRequests")
   seats             SessionParticipant[]   @relation("SessionSeats")
   sessionsAsTeacher ClassSession[]         @relation("TeacherSessions")
+  sessionsCancelled ClassSession[]         @relation("CancelledSessions")
   attendance        Attendance[]
   payrollLines      PayrollLine[]
   approvedBatches   PayrollBatch[]         @relation("BatchApprover")
@@ -239,6 +240,17 @@ model ClassSession {
   status            SessionStatus @default(SCHEDULED)
   joinedAt          DateTime?
   endedAt           DateTime?
+  /// Called off rather than deleted. A class that did not happen is a fact
+  /// the Owner, the teacher and the family all have an interest in, and
+  /// deleting the row would take the chat, the board and the invoice with it.
+  cancelledAt       DateTime?
+  cancelledById     String?
+  cancelReason      String?
+  /// The time this class was most recently moved away from, and when it was
+  /// moved. One previous time is what a row can usefully show; the full
+  /// history of a class that moved four times is not worth a table.
+  rescheduledFrom   DateTime?
+  rescheduledAt     DateTime?
   // Recording is produced by the media server, not the browsers. P2P WebRTC
   // gives the server no stream, so these stay null until an SFU fills them.
   recordingUrl      String?
@@ -253,6 +265,7 @@ model ClassSession {
 
   request      ClassRequest?          @relation(fields: [requestId], references: [id], onDelete: SetNull)
   teacher      User                   @relation("TeacherSessions", fields: [teacherId], references: [id], onDelete: Cascade)
+  cancelledBy  User?                  @relation("CancelledSessions", fields: [cancelledById], references: [id], onDelete: SetNull)
   participants SessionParticipant[]
   attendance   Attendance?
   documents    SessionDocument[]
@@ -261,6 +274,7 @@ model ClassSession {
 
   @@index([teacherId, startsAt])
   @@index([startsAt])
+  @@index([cancelledAt])
 }
 
 /// One student's seat in a class. The row existing is the booking; `joinedAt`

@@ -264,6 +264,10 @@ function ClassMonitor() {
   const live = rows.filter((s) => s.status === 'live');
   const taught = rows.filter((s) => s.status === 'completed');
   const missed = rows.filter((s) => s.status === 'no_show');
+  const called = rows.filter((s) => s.status === 'cancelled');
+  /* Short notice is the number worth a glance: one cancellation a month is
+     life, and six of them the day before is a pattern. */
+  const abrupt = called.filter((s) => s.shortNotice);
 
   return (
     <Card>
@@ -271,6 +275,8 @@ function ClassMonitor() {
         <span className="text-[13px] text-ink-3">
           {live.length ? `${live.length} in progress · ` : ''}
           {taught.length} finished · {missed.length} missed
+          {called.length ? ` · ${called.length} cancelled` : ''}
+          {abrupt.length ? ` (${abrupt.length} at short notice)` : ''}
         </span>
       </CardHead>
 
@@ -318,7 +324,14 @@ function ClassMonitor() {
                   <Td className="font-mono text-[13px]">
                     {ended ? time(ended.toISOString())
                       : s.status === 'live' ? <span className="text-ok">in progress</span>
-                        : <span className="text-ink-3">—</span>}
+                        : s.status === 'cancelled' ? (
+                          <span className="text-ink-3" data-cancelled-at={s.id}>
+                            called off
+                            {s.shortNotice ? (
+                              <span className="block text-[11px] text-warn">short notice</span>
+                            ) : null}
+                          </span>
+                        ) : <span className="text-ink-3">—</span>}
                   </Td>
                   <Td className="font-mono text-[13px]">
                     {ran != null ? `${ran} min` : `${s.minutes} min booked`}
@@ -335,7 +348,19 @@ function ClassMonitor() {
                       </span>
                     ) : null}
                   </Td>
-                  <Td className="text-[13px]">{s.topic}</Td>
+                  <Td className="text-[13px]">
+                    {s.topic}
+                    {s.status === 'cancelled' ? (
+                      <span className="block text-[11px] text-ink-3">
+                        {s.cancelledById ? `cancelled by ${store.userById(s.cancelledById).name}` : 'cancelled'}
+                        {s.cancelReason ? ` — “${s.cancelReason}”` : ''}
+                      </span>
+                    ) : s.rescheduledFrom ? (
+                      <span className="block text-[11px] text-ink-3" data-moved-from={s.id}>
+                        moved from {day(s.rescheduledFrom)}
+                      </span>
+                    ) : null}
+                  </Td>
                   <Td><StatusPill status={s.status} /></Td>
                 </tr>
               );

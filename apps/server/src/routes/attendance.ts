@@ -41,6 +41,12 @@ attendanceRouter.post('/clock-in', requireRole('TEACHER'),
     const session = await prisma.classSession.findUnique({ where: { id: sessionId } });
     if (!session) throw notFound('That session no longer exists.');
     if (session.teacherId !== me.id) throw forbidden('That session belongs to another teacher.');
+    /* Without this a teacher could clock in to a class that was called off and
+       be paid for the hour: payroll reads attendance rows, and an attendance
+       row does not know the class behind it is cancelled. */
+    if (session.status === 'CANCELLED') {
+      throw badRequest('That class was cancelled, so there is nothing to clock in to.');
+    }
 
     const existing = await prisma.attendance.findUnique({ where: { sessionId } });
     if (existing) throw conflict('You have already clocked in for that session.');
@@ -85,6 +91,10 @@ attendanceRouter.post('/no-show', requireRole('TEACHER', 'OWNER'),
     const session = await prisma.classSession.findUnique({ where: { id: sessionId } });
     if (!session) throw notFound('That session no longer exists.');
     if (me.role === 'TEACHER' && session.teacherId !== me.id) throw forbidden('Not your session.');
+    // Nobody failed to turn up to a class that was called off.
+    if (session.status === 'CANCELLED') {
+      throw badRequest('That class was cancelled, so it cannot be a no-show.');
+    }
 
     const teacher = await prisma.user.findUniqueOrThrow({ where: { id: session.teacherId } });
     const deductionCents = deductionForCents(

@@ -1,19 +1,22 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import type { Prisma } from '@prisma/client';
+import { env } from '../env.js';
 import { prisma } from '../prisma.js';
 import { asyncRoute, validate } from '../lib/validate.js';
 import { badRequest, forbidden, notFound } from '../lib/http-error.js';
 import { visibleStudentIds } from '../lib/scope.js';
 import {
-  canReadSession, isInRoom, seatsLeft, studentIdsOf, withSeats,
-  type SessionWithSeats,
+  canCancel, canReadSession, canReschedule, isGroup, isInRoom, isShortNotice,
+  seatsLeft, studentIdsOf, withSeats, type SessionWithSeats,
 } from '../lib/sessions.js';
 import { toCents } from '../lib/money.js';
 import { publicMessage, publicRequest, publicSession } from '../lib/serialize.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
 import { notify } from '../services/notifications.js';
-import { classBookedEmail, sendEmail } from '../services/email.js';
+import {
+  classBookedEmail, classCancelledEmail, classMovedEmail, sendEmail,
+} from '../services/email.js';
 import { emitToSession, emitToUser } from '../realtime/gateway.js';
 
 export const classesRouter = Router();
@@ -147,6 +150,36 @@ classesRouter.patch('/requests/:id', requireRole('TEACHER'),
     res.json({ request: publicRequest(updated), session: publicSession(session) });
   }));
 
+/**
+ * Withdrawing a request that has not been answered yet. The other half of
+ * cancelling: a student who no longer needs Thursday should not have to wait
+ * for a teacher to accept it first and then ask them to call it off.
+ */
+classesRouter.delete('/requests/:id', requireRole('STUDENT'), asyncRoute(async (req, res) => {
+  const me = actor(req);
+  const request = await prisma.classRequest.findUnique({ where: { id: String(req.params['id']) } });
+  if (!request) throw notFound('That request no longer exists.');
+  if (request.studentId !== me.id) throw forbidden('That request is not yours.');
+  if (request.status !== 'PENDING') {
+    throw badRequest(request.status === 'ACCEPTED'
+      ? 'Your teacher already accepted this — cancel the class instead.'
+      : 'That request has already been answered.');
+  }
+
+  const updated = await prisma.classRequest.update({
+    where: { id: request.id }, data: { status: 'CANCELLED' },
+  });
+  // The teacher may already have it open, so they are told rather than left
+  // to accept something that is no longer wanted.
+  await notify({
+    userId: request.teacherId, type: 'session', title: 'Request withdrawn',
+    body: `${me.name} withdrew “${request.topic}”.`, url: '/#/classes',
+  });
+  emitToUser(request.teacherId, 'classroom:request', publicRequest(updated));
+
+  res.json({ request: publicRequest(updated) });
+}));
+
 /* ---------------- sessions ---------------- */
 /** A parent reads about classes they are not in, so their view is narrowed. */
 async function rosterFilter(me: { id: string; role: string }): Promise<string[] | undefined> {
@@ -157,8 +190,14 @@ async function rosterFilter(me: { id: string; role: string }): Promise<string[] 
 classesRouter.get('/sessions', asyncRoute(async (req, res) => {
   const me = actor(req);
   const where = await seatFilter(me);
+  /* Newest first, not oldest. Ordered ascending, the 200-row window filled
+     up with the oldest classes on the books, and every consumer of this list
+     wants the other end of it: a teacher with 200 lessons behind them stopped
+     being sent any of their upcoming ones, so their dashboard said "nothing
+     scheduled" while next Tuesday sat in the database. Each caller sorts for
+     display anyway. */
   const rows = await prisma.classSession.findMany({
-    where, orderBy: { startsAt: 'asc' }, take: 200, include: withSeats,
+    where, orderBy: { startsAt: 'desc' }, take: 200, include: withSeats,
   });
   const visible = await rosterFilter(me);
   res.json({ sessions: rows.map((s) => publicSession(s, visible)) });
@@ -202,9 +241,10 @@ classesRouter.post('/sessions/:id/join', asyncRoute(async (req, res) => {
   const me = actor(req);
   const session = await sessionForActor(req, String(req.params['id']));
   assertInRoom(session, me);
-  if (session.status === 'COMPLETED' || session.status === 'CANCELLED') {
-    throw badRequest('That class is already finished.');
+  if (session.status === 'CANCELLED') {
+    throw badRequest('That class was cancelled, so there is no room to enter.');
   }
+  if (session.status === 'COMPLETED') throw badRequest('That class is already finished.');
 
   // Booking a seat and turning up are different things, and for a group class
   // the teacher needs to know which students did the second one.
@@ -237,6 +277,9 @@ classesRouter.post('/sessions/:id/complete', requireRole('TEACHER', 'OWNER'),
   asyncRoute(async (req, res) => {
     const session = await sessionForActor(req, String(req.params['id']));
     const { outcome } = req.body as { outcome: 'completed' | 'no_show' };
+    if (session.status === 'CANCELLED') {
+      throw badRequest('That class was cancelled, so there is nothing to mark.');
+    }
     const now = new Date();
 
     const updated = await prisma.classSession.update({
@@ -259,6 +302,198 @@ classesRouter.post('/sessions/:id/complete', requireRole('TEACHER', 'OWNER'),
         url: '/#/classes',
       });
     }
+    res.json({ session: publicSession(updated) });
+  }));
+
+/* ---------------- calling a class off, and moving it ----------------
+   `SessionStatus.CANCELLED` existed from the first migration and nothing
+   could set it, so the only way out of a class nobody could attend was to
+   leave it on the calendar and not turn up — which is also how it was
+   recorded, as a no-show against the teacher.
+
+   The class is never deleted. Its chat, its whiteboard and any invoice lines
+   already raised against it hang off that row, and a family arguing about a
+   charge needs the record to still exist. */
+
+const cancelInput = z.object({
+  reason: z.string().trim().max(300).optional(),
+});
+
+classesRouter.post('/sessions/:id/cancel', validate(cancelInput),
+  asyncRoute(async (req, res) => {
+    const me = actor(req);
+    const session = await sessionForActor(req, String(req.params['id']));
+    const { reason } = req.body as z.infer<typeof cancelInput>;
+
+    if (!canCancel(me, session)) {
+      throw forbidden(me.role === 'STUDENT' && isGroup(session)
+        ? 'Release your seat instead — a class other students have booked is not '
+          + 'yours to cancel.'
+        : 'Only the teacher giving this class, or an administrator, can cancel it.');
+    }
+    if (session.status === 'CANCELLED') throw badRequest('That class has already been cancelled.');
+    if (session.status === 'COMPLETED' || session.status === 'NO_SHOW') {
+      throw badRequest('That class has already finished.');
+    }
+    if (session.status === 'LIVE') {
+      throw badRequest('That class is in progress — end it from the classroom instead.');
+    }
+
+    const now = new Date();
+    const shortNotice = isShortNotice(
+      { startsAt: session.startsAt, cancelledAt: now }, env.CANCEL_NOTICE_HOURS,
+    );
+
+    /* Two facts that make a cancellation somebody's problem rather than a
+       tidy-up. Both are reported, not acted on: voiding an invoice and
+       striking a timesheet entry are the Owner's decisions, and a route that
+       quietly did either would be destroying money either way it chose. */
+    const [invoicedLines, clockedIn] = await Promise.all([
+      prisma.invoiceLine.count({ where: { sessionId: session.id } }),
+      prisma.attendance.findUnique({ where: { sessionId: session.id } }),
+    ]);
+
+    const updated = await prisma.$transaction(async (tx) => {
+      // The request this class grew from is closed with it, so a student is
+      // not left reading "accepted" against a lesson that was called off.
+      if (session.requestId) {
+        await tx.classRequest.update({
+          where: { id: session.requestId }, data: { status: 'CANCELLED' },
+        });
+      }
+      return tx.classSession.update({
+        where: { id: session.id },
+        data: {
+          status: 'CANCELLED', cancelledAt: now, cancelledById: me.id,
+          cancelReason: reason ?? null,
+        },
+        include: withSeats,
+      });
+    });
+
+    /* Everyone with a stake in the hour, except whoever just cancelled it —
+       telling someone their own news is how an inbox stops being read. */
+    const tellIds = [...studentIdsOf(session), session.teacherId].filter((id) => id !== me.id);
+    const people = await prisma.user.findMany({ where: { id: { in: tellIds } } });
+    for (const person of people) {
+      await notify({
+        userId: person.id, type: 'session', title: 'Class cancelled',
+        body: `${session.topic} — called off by ${me.name}.${reason ? ` “${reason}”` : ''}`,
+        url: '/#/classes',
+      });
+      void sendEmail(classCancelledEmail({
+        to: person.email, name: person.name.split(' ')[0] ?? person.name,
+        topic: session.topic, startsAt: session.startsAt, timezone: person.timezone,
+        cancelledBy: me.name, reason: reason ?? null, shortNotice,
+        audience: person.id === session.teacherId ? 'teacher' : 'student',
+      }));
+    }
+
+    // The Owner hears about it only when there is something to decide.
+    if (invoicedLines > 0 || clockedIn || shortNotice) {
+      const clauses = [
+        ...(shortNotice ? [`less than ${env.CANCEL_NOTICE_HOURS}h notice`] : []),
+        ...(invoicedLines > 0
+          ? [`${invoicedLines} invoice line${invoicedLines === 1 ? '' : 's'} already raised`]
+          : []),
+        ...(clockedIn ? ['the teacher had already clocked in'] : []),
+      ];
+      const owners = await prisma.user.findMany({
+        where: { role: 'OWNER' }, select: { id: true },
+      });
+      for (const owner of owners) {
+        if (owner.id === me.id) continue;
+        await notify({
+          userId: owner.id, type: 'session', title: 'Cancelled class needs a look',
+          body: `${session.topic} was cancelled by ${me.name} — ${clauses.join(', ')}.`,
+          url: '/#/admin',
+        });
+      }
+    }
+
+    emitToSession(session.id, 'classroom:state', publicSession(updated));
+    for (const id of tellIds) emitToUser(id, 'classroom:cancelled', publicSession(updated));
+
+    res.json({
+      session: publicSession(updated),
+      shortNotice,
+      /* Surfaced so the person who cancelled sees the consequence on the
+         screen where they caused it, rather than discovering it at month end. */
+      invoicedLines,
+      teacherClockedIn: Boolean(clockedIn),
+    });
+  }));
+
+const rescheduleInput = z.object({
+  startsAt: z.coerce.date(),
+  minutes: z.number().int().min(15).max(480)
+    .refine((m) => m % 15 === 0, 'Book in 15-minute steps.')
+    .optional(),
+});
+
+classesRouter.patch('/sessions/:id/schedule', validate(rescheduleInput),
+  asyncRoute(async (req, res) => {
+    const me = actor(req);
+    const session = await sessionForActor(req, String(req.params['id']));
+    const input = req.body as z.infer<typeof rescheduleInput>;
+
+    if (!canReschedule(me, session)) {
+      throw forbidden('Only the teacher giving this class, or an administrator, can move it. '
+        + 'Cancel it and ask for another time instead.');
+    }
+    if (session.status !== 'SCHEDULED') {
+      throw badRequest(session.status === 'CANCELLED'
+        ? 'That class was cancelled. Open a new one rather than moving this.'
+        : 'Only a class that has not started yet can be moved.');
+    }
+    if (input.startsAt.getTime() < Date.now()) throw badRequest('Choose a slot in the future.');
+
+    const minutes = input.minutes ?? session.minutes;
+    if (input.startsAt.getTime() === session.startsAt.getTime() && minutes === session.minutes) {
+      throw badRequest('That is the time it is already booked for.');
+    }
+
+    /* A clocked-in teacher has a timesheet entry whose lateness was measured
+       against the old start time. Moving the class would leave that
+       measurement attached to a time that no longer exists, or recompute the
+       deduction away — so it is refused rather than guessed at. */
+    const clockedIn = await prisma.attendance.findUnique({ where: { sessionId: session.id } });
+    if (clockedIn) {
+      throw badRequest('The teacher has already clocked in for this class, so moving it would '
+        + 'rewrite their timesheet. Cancel it and open a new one.');
+    }
+
+    const from = session.startsAt;
+    const updated = await prisma.classSession.update({
+      where: { id: session.id },
+      data: {
+        startsAt: input.startsAt, minutes,
+        rescheduledFrom: from, rescheduledAt: new Date(),
+      },
+      include: withSeats,
+    });
+
+    /* Students are told; a group class is not re-opened for booking, because
+       the people who took a seat chose this class, not this hour, and the
+       ones for whom the new time does not work can release their seat. */
+    const tellIds = studentIdsOf(session).filter((id) => id !== me.id);
+    const people = await prisma.user.findMany({ where: { id: { in: tellIds } } });
+    for (const person of people) {
+      await notify({
+        userId: person.id, type: 'session', title: 'Class moved',
+        body: `${session.topic} — moved by ${me.name}. Check the new time.`,
+        url: '/#/classes',
+      });
+      void sendEmail(classMovedEmail({
+        to: person.email, name: person.name.split(' ')[0] ?? person.name,
+        topic: session.topic, from, to_: input.startsAt,
+        timezone: person.timezone, movedBy: me.name, minutes,
+      }));
+    }
+
+    emitToSession(session.id, 'classroom:state', publicSession(updated));
+    for (const id of tellIds) emitToUser(id, 'classroom:moved', publicSession(updated));
+
     res.json({ session: publicSession(updated) });
   }));
 
@@ -387,10 +622,11 @@ classesRouter.delete('/sessions/:id/book', requireRole('STUDENT'), asyncRoute(as
   if (!session.participants.some((p) => p.studentId === me.id)) {
     throw badRequest('You do not have a seat in that class.');
   }
-  // A private lesson is not a seat a student can walk out of: cancelling it is
-  // the teacher's business, and dropping the only seat would leave a class
-  // with nobody in it.
-  if (session.capacity < 2) throw badRequest('Ask your teacher to cancel a private lesson.');
+  // A private lesson is not a seat to walk out of — dropping the only seat
+  // would leave a class with nobody in it. Cancelling it is the right verb,
+  // and since this message used to point at a capability nobody had, a
+  // student may now do that themselves.
+  if (session.capacity < 2) throw badRequest('Cancel the lesson instead of releasing a seat.');
 
   await prisma.sessionParticipant.deleteMany({
     where: { sessionId: session.id, studentId: me.id },

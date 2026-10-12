@@ -148,7 +148,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
     const offRequest = on('classroom:request', () => { void refresh(); });
     const offAccepted = on('classroom:accepted', () => { void refresh(); });
-    return () => { offNotification(); offRequest(); offAccepted(); };
+    /* A class moving or being called off has to reach an open tab on its own.
+       The notification already arrives; without these the timetable behind it
+       still shows the old time, and the one place someone checks before
+       setting off is the one place that is wrong. */
+    const offCancelled = on('classroom:cancelled', () => { void refresh(); });
+    const offMoved = on('classroom:moved', () => { void refresh(); });
+    return () => {
+      offNotification(); offRequest(); offAccepted(); offCancelled(); offMoved();
+    };
   }, [state.user, refresh, toast]);
 
   const signIn = useCallback(async (email: string, password: string) => {

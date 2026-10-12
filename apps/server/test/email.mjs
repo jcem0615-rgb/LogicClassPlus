@@ -49,6 +49,16 @@ const call = async (path, { method = 'GET', body, token } = {}) => {
 const login = async (email, password) =>
   (await call('/auth/login', { method: 'POST', body: { email, password } })).json;
 
+/* The class routes send with `void sendEmail(...)`: a lesson is not held up
+   because a mail server is slow, so the response can beat the delivery. */
+const waitForMail = async (count, ms = 3000) => {
+  const until = Date.now() + ms;
+  while (sent.length < count && Date.now() < until) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  return sent.length;
+};
+
 const owner = await login('owner@logicclass.plus', 'admin1234');
 const health = (await call('/health')).json;
 
@@ -140,7 +150,87 @@ if (open) {
   console.log('  (no open invoice to remind about — skipped)');
 }
 
-console.log('\n6. A provider that fails does not take the request down');
+console.log('\n6. A cancelled class reaches the inbox, not just the bell');
+const teacher = await login('daniel@logicclass.plus', 'teach1234');
+const learner = await login('amira@logicclass.plus', 'learn1234');
+const hours = (n) => new Date(Date.now() + n * 3600e3).toISOString();
+
+/** Request, accept — the accept itself sends the booking confirmation. */
+const makeLesson = async (topic, inHours) => {
+  const req = await call('/classes/requests', { method: 'POST', token: learner.token, body: {
+    teacherId: teacher.user.id, subject: 'math', topic,
+    requestedFor: hours(inHours), minutes: 60 } });
+  const acc = await call(`/classes/requests/${req.json.request.id}`, {
+    method: 'PATCH', token: teacher.token, body: { decision: 'accept' } });
+  return acc.json.session;
+};
+
+{
+  const lesson = await makeLesson('Email me when cancelled', 3);
+  await waitForMail(sent.length + 1);           // the booking confirmation
+  const before = sent.length;
+
+  const done = await call(`/classes/sessions/${lesson.id}/cancel`, {
+    method: 'POST', token: teacher.token, body: { reason: 'I have lost my voice.' } });
+  ok('the class is cancelled', done.status === 200, JSON.stringify(done.json).slice(0, 120));
+  await waitForMail(before + 1);
+  ok('one message goes out', sent.length === before + 1, `${sent.length - before}`);
+
+  const mail = sent[sent.length - 1];
+  ok('to the student, not to whoever cancelled it',
+    mail.body.to?.[0] === 'amira@logicclass.plus', JSON.stringify(mail.body.to));
+  ok('the subject says it is off', /^Cancelled:/.test(mail.body.subject ?? ''),
+    String(mail.body.subject));
+  ok('and names the class', /Email me when cancelled/.test(mail.body.subject ?? ''));
+  ok('the reason the teacher typed is in it', /lost my voice/.test(mail.body.text ?? ''),
+    String(mail.body.text).slice(0, 160));
+  ok('three hours notice is called short notice in the message',
+    /short notice/i.test(mail.body.text ?? ''), String(mail.body.text).slice(0, 300));
+  ok('and it tells them nothing is expected of them',
+    /nothing is expected of you/i.test(mail.body.text ?? ''));
+}
+
+console.log('\n7. A class with plenty of notice does not cry short notice');
+{
+  const lesson = await makeLesson('Cancelled well ahead', 72);
+  await waitForMail(sent.length + 1);
+  const before = sent.length;
+  await call(`/classes/sessions/${lesson.id}/cancel`, {
+    method: 'POST', token: teacher.token, body: {} });
+  await waitForMail(before + 1);
+  const mail = sent[sent.length - 1];
+  ok('the message goes out', sent.length === before + 1);
+  ok('with no short-notice line', !/short notice/i.test(mail.body.text ?? ''),
+    String(mail.body.text).slice(0, 200));
+  ok('and no empty quotation marks where a reason would be',
+    !/Reason given/.test(mail.body.text ?? ''));
+}
+
+console.log('\n8. A moved class says the new time in the subject');
+{
+  const lesson = await makeLesson('Email me when moved', 48);
+  await waitForMail(sent.length + 1);
+  const before = sent.length;
+
+  const moved = await call(`/classes/sessions/${lesson.id}/schedule`, {
+    method: 'PATCH', token: teacher.token, body: { startsAt: hours(96), minutes: 90 } });
+  ok('the class is moved', moved.status === 200, JSON.stringify(moved.json).slice(0, 120));
+  await waitForMail(before + 1);
+  ok('one message goes out', sent.length === before + 1, `${sent.length - before}`);
+
+  const mail = sent[sent.length - 1];
+  ok('to the student', mail.body.to?.[0] === 'amira@logicclass.plus');
+  /* The new time in the subject: somebody scanning an inbox should not have
+     to open the message to learn the one thing that changed. */
+  ok('the subject leads with the new time', /^Moved to /.test(mail.body.subject ?? ''),
+    String(mail.body.subject));
+  ok('the body gives both times', /was booked for/i.test(mail.body.text ?? ''),
+    String(mail.body.text).slice(0, 300));
+  ok('and the new length', /90 minutes/.test(mail.body.text ?? ''),
+    String(mail.body.text).slice(0, 300));
+}
+
+console.log('\n9. A provider that fails does not take the request down');
 provider.close();
 await new Promise((r) => setTimeout(r, 200));
 const whenDown = await call('/invitations', { method: 'POST', token: owner.token, body: {

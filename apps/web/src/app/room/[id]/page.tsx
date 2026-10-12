@@ -648,6 +648,22 @@ export default function RoomPage() {
       </Shell>
     );
   }
+  /* The server refuses to let anyone into a cancelled class, but arriving at
+     a hardware check and a Join button that then fails is a worse way to
+     learn it than being told on the way in — not least for someone who
+     followed a link from an email sent before it was called off. */
+  if (session.status === 'cancelled') {
+    return (
+      <Shell title="Classroom" subtitle={session.topic}>
+        <Empty
+          title="This class was cancelled"
+          body={session.cancelReason
+            ? `Reason given: “${session.cancelReason}” — nothing is happening here.`
+            : 'There is no class to join. Your Classes page has the rest of your timetable.'}
+        />
+      </Shell>
+    );
+  }
 
   const everyoneRecording = localRecording
     ? [`${me?.name ?? 'You'} (you)`, ...recorders]

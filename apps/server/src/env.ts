@@ -58,6 +58,13 @@ const schema = z.object({
      address, and a link to the wrong host is worse than no link. */
   WEB_APP_URL: z.string().optional(),
 
+  /* How much warning counts as reasonable warning. Cancelling inside this
+     window is still allowed — refusing it would just mean nobody turns up
+     instead — but it is recorded as short notice, so the Owner can see who
+     keeps calling classes off an hour beforehand. Whether short notice is
+     still billable is a policy the Owner sets, not one this server invents. */
+  CANCEL_NOTICE_HOURS: z.coerce.number().min(0).max(168).default(12),
+
   RECORDING_PROVIDER: z.enum(['none', 'livekit']).default('none'),
   RECORDING_PRESET: z.enum(['audio', '360p', '480p', '720p', '1080p']).default('720p'),
   /* The longest a single recording may run. Egress bills for as long as it is

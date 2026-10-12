@@ -3,7 +3,9 @@ import type {
   Invoice, InvoiceLine, Notification, PasswordResetRequest, PayrollBatch,
   PayrollLine, Resource, SessionParticipant, User,
 } from '@prisma/client';
+import { env } from '../env.js';
 import { fromCents } from './money.js';
+import { isShortNotice } from './sessions.js';
 
 /** The public shape of a user. The password hash never leaves this module. */
 export function publicUser(u: User) {
@@ -100,6 +102,15 @@ export const publicSession = (
     subject: s.subject.toLowerCase(), topic: s.topic, startsAt: s.startsAt.toISOString(),
     minutes: s.minutes, status: s.status.toLowerCase(),
     joinedAt: s.joinedAt?.toISOString() ?? null, endedAt: s.endedAt?.toISOString() ?? null,
+    cancelledAt: s.cancelledAt?.toISOString() ?? null,
+    cancelledById: s.cancelledById ?? null,
+    cancelReason: s.cancelReason ?? null,
+    /* Whether the notice was short is decided here, not in the browser: the
+       window is a server setting, and two clients would otherwise disagree
+       about the same class. */
+    shortNotice: isShortNotice(s, env.CANCEL_NOTICE_HOURS),
+    rescheduledFrom: s.rescheduledFrom?.toISOString() ?? null,
+    rescheduledAt: s.rescheduledAt?.toISOString() ?? null,
     recordingUrl: s.recordingUrl,
   };
 };

@@ -67,3 +67,45 @@ export async function studentIdsIn(sessionId: string): Promise<string[]> {
   });
   return rows.map((r) => r.studentId);
 }
+
+/* ---------------- calling a class off, and moving it ----------------
+   Who may do either is not the same question as who may read the class or
+   enter its room, so it gets its own pair of tests rather than another flag
+   on `canReadSession`. */
+
+export type Cancellable = Pick<ClassSession, 'teacherId' | 'capacity'> & {
+  participants: Array<Pick<SessionParticipant, 'studentId'>>;
+};
+
+/**
+ * The teacher who is giving the class, the Owner, or — on a private lesson —
+ * the student whose lesson it is. A student in a *group* class releases their
+ * seat instead: one of six people walking out should not end the class for
+ * the other five, and `DELETE /sessions/:id/book` is how they leave.
+ */
+export function canCancel(me: Actor, s: Cancellable): boolean {
+  if (me.role === 'OWNER') return true;
+  if (me.role === 'TEACHER') return s.teacherId === me.id;
+  if (me.role === 'STUDENT') {
+    return !isGroup(s) && s.participants.some((p) => p.studentId === me.id);
+  }
+  // A parent may read their child's class. Calling it off is somebody else's
+  // decision — theirs to ask for, not to make.
+  return false;
+}
+
+/** Moving a class is the teacher's or the Owner's; a student cancels and asks again. */
+export const canReschedule = (me: Actor, s: Pick<ClassSession, 'teacherId'>): boolean =>
+  me.role === 'OWNER' || (me.role === 'TEACHER' && s.teacherId === me.id);
+
+/**
+ * Was this called off late enough to have cost somebody their afternoon?
+ * Derived rather than stored: the window is configuration, and a stored
+ * boolean would be wrong the moment the Owner changed it.
+ */
+export function isShortNotice(
+  s: Pick<ClassSession, 'startsAt' | 'cancelledAt'>, windowHours: number,
+): boolean {
+  if (!s.cancelledAt) return false;
+  return s.startsAt.getTime() - s.cancelledAt.getTime() < windowHours * 3_600_000;
+}

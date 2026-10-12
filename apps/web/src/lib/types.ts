@@ -56,6 +56,15 @@ export interface ClassSession {
   capacity: number; seatsLeft: number; seatPrice: number | null;
   subject: Subject; topic: string; startsAt: string; minutes: number;
   status: SessionStatus; joinedAt: string | null; endedAt: string | null;
+  /** Set only on a cancelled class: when, by whom, and why if they said. */
+  cancelledAt: string | null;
+  cancelledById: string | null;
+  cancelReason: string | null;
+  /** Cancelled inside the school's notice window. Decided by the server. */
+  shortNotice: boolean;
+  /** The time a moved class was moved away from. */
+  rescheduledFrom: string | null;
+  rescheduledAt: string | null;
   recordingUrl: string | null;
 }
 

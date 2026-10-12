@@ -95,6 +95,11 @@ billingRouter.post('/invoices/for-class/:sessionId', requireRole('OWNER'),
       include: { participants: { include: { student: true } } },
     });
     if (!session) throw notFound('That class no longer exists.');
+    // Billing a class that was called off is the one mistake this button could
+    // make that ends up on a family's card statement.
+    if (session.status === 'CANCELLED') {
+      throw badRequest('That class was cancelled, so its seats cannot be billed.');
+    }
     if (session.seatPriceCents == null) {
       throw badRequest('That class has no seat price, so there is nothing to bill.');
     }

@@ -40,10 +40,23 @@ export default function ClassesPage() {
     () => [...store.sessions].sort(
       (a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime()),
     [store.sessions]);
-  const upcoming = sessions.filter((s) => s.status === 'scheduled' || s.status === 'live');
-  const past = sessions.filter((s) => s.status === 'completed' || s.status === 'no_show').reverse();
+  /* A class that was called off for tomorrow belongs on the list where
+     tomorrow is, not filed under history where nobody would look for it. It
+     stays in Upcoming — visibly cancelled — until its start time passes, so
+     a student who missed the email still sees that their Thursday is free. */
+  const ahead = (s: ClassSession) => new Date(s.startsAt).getTime() > Date.now();
+  const onTheBooks = (s: ClassSession) => s.status === 'scheduled' || s.status === 'live';
+  const upcoming = sessions.filter((s) => onTheBooks(s) || (s.status === 'cancelled' && ahead(s)));
+  const booked = upcoming.filter(onTheBooks);
+  const past = sessions.filter((s) => s.status === 'completed' || s.status === 'no_show'
+    || (s.status === 'cancelled' && !ahead(s))).reverse();
   const teachers = store.users.filter((u) => u.role === 'teacher' && u.status === 'active');
-  const as = user?.role === 'teacher' ? 'teacher' : user?.role === 'owner' ? 'owner' : 'student';
+  /* A parent used to fall into the student branch here, which was only ever a
+     wording choice — until the row grew buttons, and it started offering them
+     actions the server refuses. */
+  const as = user?.role === 'teacher' ? 'teacher'
+    : user?.role === 'owner' ? 'owner'
+      : user?.role === 'parent' ? 'parent' : 'student';
 
   async function createRequest(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -110,7 +123,9 @@ export default function ClassesPage() {
         : 'Every request and session on the platform.'}
     >
       <Summary items={[
-        { k: 'Upcoming', v: upcoming.length },
+        { k: 'Upcoming', v: booked.length,
+          ...(upcoming.length > booked.length
+            ? { s: `${upcoming.length - booked.length} cancelled` } : {}) },
         { k: 'Pending requests', v: store.requests.filter((r) => r.status === 'pending').length },
         { k: 'Completed', v: past.filter((s) => s.status === 'completed').length },
         { k: 'Total hours',
@@ -278,7 +293,14 @@ export default function ClassesPage() {
               <tbody>
                 {past.slice(0, 12).map((s) => (
                   <tr key={s.id} className="hover:bg-card-2">
-                    <Td className="font-medium">{s.topic}</Td>
+                    <Td className="font-medium">
+                      {s.topic}
+                      {s.cancelReason ? (
+                        <span className="block text-[12px] font-normal text-ink-3">
+                          “{s.cancelReason}”
+                        </span>
+                      ) : null}
+                    </Td>
                     <Td className="text-[13px]">
                       {as === 'teacher'
                         ? roomRoster(s, (id) => store.userById(id).name)

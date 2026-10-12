@@ -31,6 +31,9 @@ const statusTone: Record<string, Tone> = {
   active: 'ok', pending: 'warn', suspended: 'crit', scheduled: 'neutral', live: 'ok',
   completed: 'neutral', no_show: 'crit', accepted: 'ok', declined: 'crit',
   paid: 'ok', open: 'warn', void: 'neutral', draft: 'neutral', approved: 'ok', rejected: 'crit',
+  /* A cancelled class is a non-event, not a failure: a red pill next to every
+     one of them would make a tidy calendar look like a disaster. */
+  cancelled: 'neutral',
 };
 const statusLabel: Record<string, string> = { no_show: 'No-show' };
 
