@@ -39,6 +39,35 @@ const msg = (r) => r.json?.error?.message ?? JSON.stringify(r.json);
 const why = (r) => r.json?.error?.message ?? '';
 const hours = (n) => new Date(Date.now() + n * 3600e3).toISOString();
 
+/* Finding an hour the teacher is actually free.
+   A fixed offset was fine while nothing checked for clashes. Now a booked
+   hour blocks the next booking, so "+48h" is only free the first time anybody
+   asks for it — and the seeded data, the other suites and the last run of this
+   one all share the calendar. The slot is chosen against the real timetable
+   rather than assumed, which is also what a person does. */
+let booked = [];
+async function loadCalendar() {
+  booked = (await call('/classes/sessions', { token: owner.token })).json.sessions
+    .filter((row) => row.status !== 'cancelled')
+    .map((row) => ({
+      from: Date.parse(row.startsAt),
+      to: Date.parse(row.startsAt) + row.minutes * 60_000,
+    }));
+}
+/** The first free slot at or after `aboutHours` from now, in quarter-hours. */
+function freeAt(aboutHours, minutes = 60) {
+  for (let step = 0; step < 4 * 24 * 14; step += 1) {
+    const from = Date.now() + aboutHours * 3600e3 + step * 15 * 60_000;
+    const to = from + minutes * 60_000;
+    if (!booked.some((b) => from < b.to && b.from < to)) {
+      // Claimed at once: two calls in a row must not choose the same hour.
+      booked.push({ from, to });
+      return new Date(from).toISOString();
+    }
+  }
+  throw new Error(`no free ${minutes}-minute slot near +${aboutHours}h`);
+}
+
 const owner = await login('owner@logicclass.plus', 'admin1234');
 const daniel = await login('daniel@logicclass.plus', 'teach1234');
 const hana = await login('hana@logicclass.plus', 'teach1234');
@@ -46,30 +75,39 @@ const amira = await login('amira@logicclass.plus', 'learn1234');
 const kenji = await login('kenji@logicclass.plus', 'learn1234');
 const nadia = await login('nadia@logicclass.plus', 'parent1234');
 
+await loadCalendar();
+
+/* Every class this suite books, so it can hand the calendar back. Classes
+   left behind used to be invisible; now that a booked hour blocks the next
+   booking, residue from one run is a slot the next run cannot have. */
+const made = [];
+
 /** A private lesson, the long way round: request then accept. */
 async function privateLesson(topic, inHours = 48, student = amira) {
   const req = await call('/classes/requests', {
     method: 'POST', token: student.token,
     body: {
       teacherId: daniel.user.id, subject: 'math', topic,
-      requestedFor: hours(inHours), minutes: 60,
+      requestedFor: freeAt(inHours), minutes: 60,
     },
   });
   const accepted = await call(`/classes/requests/${req.json.request.id}`, {
     method: 'PATCH', token: daniel.token, body: { decision: 'accept' },
   });
+  if (accepted.json?.session?.id) made.push(accepted.json.session.id);
   return { requestId: req.json.request.id, session: accepted.json.session };
 }
 
 async function groupClass(topic, inHours = 48, seats = 4) {
-  const made = await call('/classes/group', {
+  const opened = await call('/classes/group', {
     method: 'POST', token: daniel.token,
     body: {
-      subject: 'math', topic, startsAt: hours(inHours),
+      subject: 'math', topic, startsAt: freeAt(inHours),
       minutes: 60, capacity: seats, seatPrice: 9,
     },
   });
-  return made.json.session;
+  if (opened.json?.session?.id) made.push(opened.json.session.id);
+  return opened.json.session;
 }
 
 console.log('\n1. A student calls off their own private lesson');
@@ -377,6 +415,17 @@ console.log('\n12. Withdrawing a request nobody has answered yet');
   ok('withdrawing an accepted request is refused', tooLate.status === 400, msg(tooLate));
   ok('and points at cancelling the class', /cancel the class/i.test(why(tooLate)), msg(tooLate));
 }
+
+/* Hand the calendar back. A cancelled class holds no slot, so cancelling
+   everything booked here leaves the next run the same free hours this one
+   started with. Already-cancelled ones answer 400, which is fine. */
+let freed = 0;
+for (const id of made) {
+  const r = await call(`/classes/sessions/${id}/cancel`, {
+    method: 'POST', token: owner.token, body: { reason: 'Test cleanup.' } });
+  if (r.status === 200) freed += 1;
+}
+console.log(`\nreleased ${freed} of the ${made.length} classes this run booked`);
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

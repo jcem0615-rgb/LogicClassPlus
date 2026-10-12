@@ -155,18 +155,52 @@ const teacher = await login('daniel@logicclass.plus', 'teach1234');
 const learner = await login('amira@logicclass.plus', 'learn1234');
 const hours = (n) => new Date(Date.now() + n * 3600e3).toISOString();
 
+/* A booked hour now blocks the next booking, so a fixed offset is only free
+   the first time anybody asks for it. The slot is chosen against the real
+   timetable; the search steps forward from the offset, so "+3h" stays inside
+   the short-notice window and "+72h" stays outside it. */
+const teacherForLessons = await login('daniel@logicclass.plus', 'teach1234');
+const learnerForLessons = await login('amira@logicclass.plus', 'learn1234');
+/* Only the two people these lessons involve. A clash is per-person, so
+   treating every teacher's hour as busy would call the whole calendar full —
+   which is exactly what happened, and left no gap inside the notice window. */
+const busySlots = (await call('/classes/sessions', { token: owner.token })).json.sessions
+  .filter((row) => row.status !== 'cancelled')
+  .filter((row) => row.teacherId === teacherForLessons.user.id
+    || row.studentIds.includes(learnerForLessons.user.id))
+  .map((row) => ({ from: Date.parse(row.startsAt), to: Date.parse(row.startsAt) + row.minutes * 60_000 }));
+function freeAt(aboutHours, { minutes = 60, stepMinutes = 15, withinHours = Infinity } = {}) {
+  const limit = Date.now() + withinHours * 3600e3;
+  for (let step = 0; step < 24 * 60; step += 1) {
+    const from = Date.now() + aboutHours * 3600e3 + step * stepMinutes * 60_000;
+    const to = from + minutes * 60_000;
+    /* `withinHours` matters for the short-notice test: a slot found by
+       stepping forward past the notice window is a perfectly good slot and
+       the wrong one to test short notice with. */
+    if (to > limit) break;
+    if (!busySlots.some((b) => from < b.to && b.from < to)) {
+      busySlots.push({ from, to });
+      return new Date(from).toISOString();
+    }
+  }
+  throw new Error(`no free ${minutes}-minute slot near +${aboutHours}h`
+    + (withinHours === Infinity ? '' : ` inside +${withinHours}h`));
+}
+
 /** Request, accept — the accept itself sends the booking confirmation. */
-const makeLesson = async (topic, inHours) => {
+const makeLesson = async (topic, inHours, slotOptions = {}) => {
+  const minutes = slotOptions.minutes ?? 60;
   const req = await call('/classes/requests', { method: 'POST', token: learner.token, body: {
     teacherId: teacher.user.id, subject: 'math', topic,
-    requestedFor: hours(inHours), minutes: 60 } });
+    requestedFor: freeAt(inHours, slotOptions), minutes } });
   const acc = await call(`/classes/requests/${req.json.request.id}`, {
     method: 'PATCH', token: teacher.token, body: { decision: 'accept' } });
   return acc.json.session;
 };
 
 {
-  const lesson = await makeLesson('Email me when cancelled', 3);
+  const lesson = await makeLesson('Email me when cancelled', 2,
+    { minutes: 30, stepMinutes: 5, withinHours: 10 });
   await waitForMail(sent.length + 1);           // the booking confirmation
   const before = sent.length;
 
@@ -213,7 +247,8 @@ console.log('\n8. A moved class says the new time in the subject');
   const before = sent.length;
 
   const moved = await call(`/classes/sessions/${lesson.id}/schedule`, {
-    method: 'PATCH', token: teacher.token, body: { startsAt: hours(96), minutes: 90 } });
+    method: 'PATCH', token: teacher.token,
+    body: { startsAt: freeAt(96, { minutes: 90 }), minutes: 90 } });
   ok('the class is moved', moved.status === 200, JSON.stringify(moved.json).slice(0, 120));
   await waitForMail(before + 1);
   ok('one message goes out', sent.length === before + 1, `${sent.length - before}`);

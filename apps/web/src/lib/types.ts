@@ -68,6 +68,28 @@ export interface ClassSession {
   recordingUrl: string | null;
 }
 
+/** One span of a teacher's week, in their own timezone. */
+export interface AvailabilityWindow {
+  id?: string;
+  /** 0 = Sunday … 6 = Saturday. */
+  weekday: number;
+  day?: string;
+  /** "09:00" — local to the teacher, not the viewer. */
+  start: string;
+  end: string;
+}
+
+export interface TeacherHours {
+  teacherId: string;
+  teacherName: string;
+  timezone: string;
+  windows: AvailabilityWindow[];
+  /** The same thing in a sentence, so every screen words it identically. */
+  summary: string;
+  /** Nothing declared: bookable at any hour, which is the default. */
+  open: boolean;
+}
+
 /** A class with more than one seat is a group class; one seat is private. */
 export const isGroup = (s: ClassSession): boolean => s.capacity > 1;
 

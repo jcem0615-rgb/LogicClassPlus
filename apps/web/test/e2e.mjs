@@ -36,6 +36,39 @@ async function open(name) {
   return page;
 }
 
+/* An hour the teacher is actually free.
+   A booked hour now blocks the next booking, so a fixed "+2h" is only free
+   the first time anybody asks for it — and the seeded classes, the server
+   suites and the last run of this one all share one calendar. Slots are
+   therefore chosen against the real timetable. The reservation is local to
+   this process, so two calls in a row cannot pick the same hour. */
+const claimed = [];
+async function freeSlotFrom(aboutHours, minutes = 60) {
+  const res = await fetch(`${API}/api/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'owner@logicclass.plus', password: 'admin1234' }),
+  });
+  const { token } = await res.json();
+  const list = await fetch(`${API}/api/classes/sessions`, {
+    headers: { authorization: `Bearer ${token}` } });
+  const busy = (await list.json()).sessions
+    .filter((row) => row.status !== 'cancelled')
+    .map((row) => ({
+      from: Date.parse(row.startsAt),
+      to: Date.parse(row.startsAt) + row.minutes * 60_000,
+    }))
+    .concat(claimed);
+  for (let step = 0; step < 4 * 24 * 14; step += 1) {
+    const from = Date.now() + aboutHours * 3600e3 + step * 15 * 60_000;
+    const to = from + minutes * 60_000;
+    if (!busy.some((b) => from < b.to && b.from < to)) {
+      claimed.push({ from, to });
+      return new Date(from).toISOString();
+    }
+  }
+  throw new Error(`no free slot near +${aboutHours}h`);
+}
+
 async function signIn(page, email, password) {
   await page.waitForSelector('#login-email');
   await page.fill('#login-email', email);
@@ -80,7 +113,9 @@ await owner.waitForTimeout(800);
 ok('owner sees every account', (await owner.textContent('main')).includes('All accounts'));
 
 console.log('\n3. A request reaches the teacher live');
-const requestId = await student.evaluate(async ({ api }) => {
+const section3Slot = await freeSlotFrom(2);
+const liveTopic = 'Next.js client test ' + Date.now();
+const requestId = await student.evaluate(async ({ api, when, topic }) => {
   const token = localStorage.getItem('logicclass.token');
   const call = (path, options = {}) => fetch(api + '/api' + path, {
     method: options.method || 'GET',
@@ -90,11 +125,11 @@ const requestId = await student.evaluate(async ({ api }) => {
   const users = (await call('/users')).users;
   const daniel = users.find((u) => u.email === 'daniel@logicclass.plus');
   const r = await call('/classes/requests', { method: 'POST', body: {
-    teacherId: daniel.id, subject: 'math', topic: 'Next.js client test ' + Date.now(),
-    requestedFor: new Date(Date.now() + 2 * 3600e3).toISOString(), minutes: 60,
+    teacherId: daniel.id, subject: 'math', topic,
+    requestedFor: when, minutes: 60,
   }});
   return r.request.id;
-}, { api: API });
+}, { api: API, when: section3Slot, topic: liveTopic });
 
 await teacher.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
 await teacher.waitForTimeout(2500);
@@ -510,7 +545,7 @@ await signIn(tutor, 'daniel@logicclass.plus', 'teach1234');
 await tutor.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
 await tutor.waitForSelector('[data-testid=open-group]');
 const title = `Group e2e ${Date.now()}`;
-const slot = new Date(Date.now() + 3 * 3600e3);
+const slot = new Date(await freeSlotFrom(3));
 const localSlot = new Date(slot.getTime() - slot.getTimezoneOffset() * 60e3).toISOString().slice(0, 16);
 await tutor.fill('[data-testid=open-group] input[name=topic]', title);
 await tutor.fill('[data-testid=open-group] input[name=when]', localSlot);
@@ -660,7 +695,7 @@ await signIn(recStudent, 'amira@logicclass.plus', 'learn1234');
    had no seat in the moment that order changed — so the student was shown
    "not your classroom" and the failure pointed at the recording code. */
 const recSessionId = await (async () => {
-  const reqId = await recStudent.evaluate(async (api) => {
+  const reqId = await recStudent.evaluate(async ({ api, when }) => {
     const token = localStorage.getItem('logicclass.token');
     const call = (path, options = {}) => fetch(api + '/api' + path, {
       method: options.method || 'GET',
@@ -671,9 +706,9 @@ const recSessionId = await (async () => {
     const daniel = users.find((u) => u.email === 'daniel@logicclass.plus');
     const r = await call('/classes/requests', { method: 'POST', body: {
       teacherId: daniel.id, subject: 'math', topic: 'Recorded lesson ' + Date.now(),
-      requestedFor: new Date(Date.now() + 3600e3).toISOString(), minutes: 60 } });
+      requestedFor: when, minutes: 60 } });
     return r.request.id;
-  }, API);
+  }, { api: API, when: await freeSlotFrom(1) });
   return recTeacher.evaluate(async ({ api, reqId }) => {
     const token = localStorage.getItem('logicclass.token');
     const r = await fetch(api + '/api/classes/requests/' + reqId, {
@@ -1039,14 +1074,18 @@ ok('the table says when, who and what for every class',
   ['Date', 'Started', 'Ended', 'Length', 'Teacher', 'Students', 'Class', 'Status']
     .every((h) => header.includes(h)), header.slice(0, 160));
 
-const anyRow = await watcher.evaluate(() => {
+await watcher.fill('#class-search', liveTopic);
+await watcher.waitForTimeout(1200);
+const taughtRow = await watcher.evaluate(() => {
   const row = document.querySelector('[data-class-row]');
   return row ? row.textContent.replace(/\s+/g, ' ') : null;
 });
-ok('a finished class shows a real start and end, not just its booking',
-  await watcher.evaluate(() => [...document.querySelectorAll('[data-class-row]')]
-    .some((r) => /\d{2}:\d{2}/.test(r.textContent) && /min/.test(r.textContent))),
-  String(anyRow).slice(0, 180));
+ok('the class this run actually taught is findable', Boolean(taughtRow), String(taughtRow));
+ok('and shows a real start, not just its booking',
+  /\d{2}:\d{2}/.test(taughtRow ?? '') && /min/.test(taughtRow ?? ''),
+  String(taughtRow).slice(0, 180));
+await watcher.fill('#class-search', '');
+await watcher.waitForTimeout(1200);
 
 ok('and names the teacher and the students in it',
   await watcher.evaluate(() => [...document.querySelectorAll('[data-class-row]')]
@@ -1092,7 +1131,7 @@ async function makeLessonFor(email, password, topic, inHours) {
     headers: { 'content-type': 'application/json', authorization: `Bearer ${studentToken}` },
     body: JSON.stringify({
       teacherId: teacherAuth.user.id, subject: 'math', topic,
-      requestedFor: new Date(Date.now() + inHours * 3600e3).toISOString(), minutes: 60,
+      requestedFor: await freeSlotFrom(inHours), minutes: 60,
     }),
   });
   const requestId = (await made.json()).request.id;
@@ -1117,7 +1156,7 @@ await signIn(cancelStudent, 'kenji@logicclass.plus', 'learn1234');
 
 /** A private lesson between these two, set up through the API. */
 const makeLesson = async (topic, inHours) => {
-  const reqId = await cancelStudent.evaluate(async ({ api, topic, inHours }) => {
+  const reqId = await cancelStudent.evaluate(async ({ api, topic, when }) => {
     const token = localStorage.getItem('logicclass.token');
     const call = (path, options = {}) => fetch(api + '/api' + path, {
       method: options.method || 'GET',
@@ -1128,9 +1167,9 @@ const makeLesson = async (topic, inHours) => {
     const daniel = users.find((u) => u.email === 'daniel@logicclass.plus');
     const r = await call('/classes/requests', { method: 'POST', body: {
       teacherId: daniel.id, subject: 'math', topic,
-      requestedFor: new Date(Date.now() + inHours * 3600e3).toISOString(), minutes: 60 } });
+      requestedFor: when, minutes: 60 } });
     return r.request.id;
-  }, { api: API, topic, inHours });
+  }, { api: API, topic, when: await freeSlotFrom(inHours) });
   return cancelTeacher.evaluate(async ({ api, reqId }) => {
     const token = localStorage.getItem('logicclass.token');
     const r = await fetch(api + '/api/classes/requests/' + reqId, {
@@ -1223,7 +1262,7 @@ ok('and it goes through', await cancelStudent.evaluate((id) =>
   Boolean(document.querySelector(`[data-cancelled="${id}"]`)), lessonMine));
 
 // The other half: a request nobody has answered yet.
-const pendingId = await cancelStudent.evaluate(async ({ api }) => {
+const pendingId = await cancelStudent.evaluate(async ({ api, when }) => {
   const token = localStorage.getItem('logicclass.token');
   const call = (path, options = {}) => fetch(api + '/api' + path, {
     method: options.method || 'GET',
@@ -1234,9 +1273,9 @@ const pendingId = await cancelStudent.evaluate(async ({ api }) => {
   const daniel = users.find((u) => u.email === 'daniel@logicclass.plus');
   const r = await call('/classes/requests', { method: 'POST', body: {
     teacherId: daniel.id, subject: 'english', topic: 'Withdraw from the browser',
-    requestedFor: new Date(Date.now() + 45 * 3600e3).toISOString(), minutes: 60 } });
+    requestedFor: when, minutes: 60 } });
   return r.request.id;
-}, { api: API });
+}, { api: API, when: await freeSlotFrom(45) });
 await cancelStudent.reload({ waitUntil: 'networkidle' });
 await cancelStudent.waitForSelector(`[data-withdraw="${pendingId}"]`, { timeout: 15_000 });
 ok('a pending request offers Withdraw', true);
@@ -1288,7 +1327,7 @@ await cancelTeacher.click(`[data-move="${lessonMove}"]`);
 await cancelTeacher.waitForSelector('#move-when', { timeout: 10_000 });
 
 const bookedFor = await cancelTeacher.inputValue('#move-when');
-const next = new Date(Date.now() + 80 * 3600e3);
+const next = new Date(await freeSlotFrom(80));
 const local = new Date(next.getTime() - next.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
 ok('the form opens on the time it is currently booked for', Boolean(bookedFor), String(bookedFor));
 await cancelTeacher.fill('#move-when', local);
@@ -1316,6 +1355,149 @@ ok('and it is still an upcoming class, not history',
 
 await cancelTeacher.close();
 await cancelStudent.close();
+
+console.log('\n20. Teaching hours, and not being booked twice');
+
+const hoursTeacher = await open('hours-teacher');
+await signIn(hoursTeacher, 'hana@logicclass.plus', 'teach1234');
+await hoursTeacher.goto(`${WEB}/settings`, { waitUntil: 'networkidle' });
+await hoursTeacher.waitForSelector('[data-testid=add-hours]', { timeout: 15_000 });
+
+ok('a teacher who has set none is told any hour is bookable',
+  (await hoursTeacher.textContent('[data-testid=hours-summary]')).includes('any hour'),
+  await hoursTeacher.textContent('[data-testid=hours-summary]'));
+ok('and the hours are labelled with their own timezone',
+  Boolean((await hoursTeacher.textContent('[data-testid=hours-timezone]')).trim()));
+
+/* A Monday morning and a Monday afternoon with a break between them — the
+   normal shape of a tutor's day, and the thing a one-row-per-day grid cannot
+   express. */
+const addSpan = async (weekday, start, end) => {
+  await hoursTeacher.selectOption('#hours-weekday', String(weekday));
+  await hoursTeacher.fill('#hours-start', start);
+  await hoursTeacher.fill('#hours-end', end);
+  await hoursTeacher.click('[data-testid=add-hours] button[type=submit]');
+  await hoursTeacher.waitForTimeout(300);
+};
+await addSpan(1, '09:00', '12:00');
+await addSpan(1, '13:00', '17:00');
+ok('two spans on one day can be added', await hoursTeacher.locator('[data-hours-row]').count() === 2);
+
+await addSpan(1, '11:00', '14:00');
+await hoursTeacher.waitForTimeout(600);
+ok('a span overlapping one already there is refused before it is saved',
+  await hoursTeacher.locator('[data-hours-row]').count() === 2);
+
+await addSpan(1, '18:00', '17:00');
+await hoursTeacher.waitForTimeout(600);
+ok('and so is one that ends before it starts',
+  await hoursTeacher.locator('[data-hours-row]').count() === 2);
+
+await hoursTeacher.click('[data-testid=save-hours]');
+await hoursTeacher.waitForTimeout(2500);
+const savedHours = await hoursTeacher.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const me = await (await fetch(api + '/api/auth/me', {
+    headers: { authorization: 'Bearer ' + token } })).json();
+  const r = await fetch(`${api}/api/availability/${me.user.id}`, {
+    headers: { authorization: 'Bearer ' + token } });
+  return r.json();
+}, API);
+ok('saving sends them to the server',
+  savedHours.summary === 'Monday 09:00–12:00, 13:00–17:00', JSON.stringify(savedHours.summary));
+ok('and the teacher no longer counts as open', savedHours.open === false);
+
+/* What a student sees: the hours, before being refused by them. */
+const booker = await open('hours-student');
+await signIn(booker, 'lucia@logicclass.plus', 'learn1234');
+await booker.goto(`${WEB}/classes`, { waitUntil: 'networkidle' });
+await booker.waitForSelector('#request-teacher', { timeout: 15_000 });
+await booker.selectOption('#request-teacher', savedHours.teacherId);
+await booker.waitForTimeout(1500);
+const shown = await booker.textContent('[data-testid=teacher-hours]');
+ok('the student is told the hours rather than left to guess',
+  /Monday 09:00–17:00|Monday 09:00–12:00, 13:00–17:00/.test(shown ?? ''), String(shown));
+ok('and in whose timezone they are', (shown ?? '').includes(savedHours.timezone), String(shown));
+
+// Remove them again so the rest of the suite is unaffected.
+await hoursTeacher.evaluate(async ({ api, teacherId }) => {
+  const token = localStorage.getItem('logicclass.token');
+  await fetch(`${api}/api/availability/${teacherId}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + token },
+    body: JSON.stringify({ windows: [] }),
+  });
+}, { api: API, teacherId: savedHours.teacherId });
+
+/* Double booking, through the screens rather than the API: the student asks
+   for an hour that is already taken and is told so, rather than waiting a day
+   to be declined. */
+const taken = await makeLessonFor('lucia@logicclass.plus', 'learn1234',
+  'Holds this hour ' + Date.now(), 120);
+const heldAt = await booker.evaluate(async ({ api, id }) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(`${api}/api/classes/sessions/${id}`, {
+    headers: { authorization: 'Bearer ' + token } });
+  return (await r.json()).session.startsAt;
+}, { api: API, id: taken });
+
+await booker.reload({ waitUntil: 'networkidle' });
+await booker.waitForSelector('#request-teacher', { timeout: 15_000 });
+const danielId = await booker.evaluate(async (api) => {
+  const token = localStorage.getItem('logicclass.token');
+  const r = await fetch(api + '/api/users', { headers: { authorization: 'Bearer ' + token } });
+  return (await r.json()).users.find((u) => u.email === 'daniel@logicclass.plus').id;
+}, API);
+await booker.selectOption('#request-teacher', danielId);
+const asLocalInput = (iso) => {
+  const d = new Date(iso);
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+};
+await booker.fill('input[name=when]', asLocalInput(heldAt));
+await booker.fill('input[name=topic]', 'Over a lesson that already exists');
+await booker.click('form:has(#request-teacher) button[type=submit]');
+await booker.waitForTimeout(2500);
+const refusal = await booker.textContent('body');
+ok('asking for an hour the teacher already has is refused on the spot',
+  /already has a class/i.test(refusal), refusal.replace(/\s+/g, ' ').slice(0, 220));
+
+await hoursTeacher.close();
+await booker.close();
+
+/* Hand the calendar back.
+   Every slot this run booked is in `claimed`, and a cancelled class holds no
+   slot, so cancelling them leaves the next run the same free hours. Without
+   this each run left a class an hour further along than the last, and after
+   enough runs there was no gap left in the next working day — which broke a
+   suite testing something else entirely. */
+{
+  const res = await fetch(`${API}/api/auth/login`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'owner@logicclass.plus', password: 'admin1234' }),
+  });
+  const { token } = await res.json();
+  const auth = { authorization: `Bearer ${token}` };
+  const list = await fetch(`${API}/api/classes/sessions`, { headers: auth });
+  const mine = (await list.json()).sessions.filter((row) => row.status !== 'cancelled'
+    && claimed.some((c) => Math.abs(Date.parse(row.startsAt) - c.from) < 60_000));
+  let freed = 0;
+  for (const row of mine) {
+    /* This suite enters classrooms and never leaves them, so most of its
+       classes are still LIVE — and cancelling a class in progress is refused,
+       correctly. Stepping out of the room first turns it back into a
+       scheduled class, which can then be called off. */
+    if (row.status === 'live') {
+      await fetch(`${API}/api/classes/sessions/${row.id}/leave`, { method: 'POST', headers: auth });
+    }
+    const r = await fetch(`${API}/api/classes/sessions/${row.id}/cancel`, {
+      method: 'POST',
+      headers: { ...auth, 'content-type': 'application/json' },
+      body: JSON.stringify({ reason: 'Test cleanup.' }),
+    });
+    if (r.ok) freed += 1;
+  }
+  console.log(`\nreleased ${freed} of the ${claimed.length} slots this run booked`);
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 console.log('ERRORS:', errors.length ? JSON.stringify([...new Set(errors)].slice(0, 8), null, 1) : 'none');

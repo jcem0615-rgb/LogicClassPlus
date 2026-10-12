@@ -5,6 +5,7 @@ import { api, apiUrl } from '@/lib/api';
 import { useStore } from '@/lib/store';
 import { Shell } from '@/components/shell';
 import { Avatar, Button, Card, CardHead, Field, Flag, Pill } from '@/components/ui';
+import { TeachingHours } from '@/components/teaching-hours';
 import type { Health } from '@/lib/types';
 
 type Theme = 'system' | 'light' | 'dark';
@@ -140,6 +141,8 @@ export default function SettingsPage() {
           </div>
         </Card>
       </div>
+
+      {user.role === 'teacher' ? <TeachingHours teacherId={user.id} /> : null}
 
       <Card>
         <CardHead title="Server">

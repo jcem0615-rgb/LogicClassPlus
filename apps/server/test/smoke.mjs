@@ -23,6 +23,24 @@ ok('owner signs in', owner?.token && owner.user.role === 'owner');
 const daniel = await login('daniel@logicclass.plus', 'teach1234');
 const hana = await login('hana@logicclass.plus', 'teach1234');
 const amira = await login('amira@logicclass.plus', 'learn1234');
+
+/* A booked hour now blocks the next booking, so this suite can no longer
+   assume "+3h" is free: the seeded classes, the other suites and its own
+   previous runs share one calendar. It asks what is free instead. */
+const bookedSlots = (await call('/classes/sessions', { token: owner.token })).json.sessions
+  .filter((row) => row.status !== 'cancelled')
+  .map((row) => ({ from: Date.parse(row.startsAt), to: Date.parse(row.startsAt) + row.minutes * 60_000 }));
+function freeAt(aboutHours, minutes = 60) {
+  for (let step = 0; step < 4 * 24 * 14; step += 1) {
+    const from = Date.now() + aboutHours * 3600e3 + step * 15 * 60_000;
+    const to = from + minutes * 60_000;
+    if (!bookedSlots.some((b) => from < b.to && b.from < to)) {
+      bookedSlots.push({ from, to });
+      return new Date(from).toISOString();
+    }
+  }
+  throw new Error(`no free slot near +${aboutHours}h`);
+}
 ok('teacher signs in', daniel?.token && daniel.user.role === 'teacher');
 ok('student signs in', amira?.token && amira.user.role === 'student');
 
@@ -117,7 +135,7 @@ const teachers = (await call('/users', { token: amira.token })).json.users.filte
 ok('student sees active teachers only', teachers.length >= 2 && teachers.every(t => t.status === 'active'));
 const req = await call('/classes/requests', { method:'POST', token: amira.token, body:{
   teacherId: daniel.user.id, subject:'math', topic:'Quadratic inequalities revision',
-  requestedFor: new Date(Date.now() + 3*3600e3).toISOString(), minutes: 60, note:'Test run' } });
+  requestedFor: freeAt(3), minutes: 60, note:'Test run' } });
 ok('student creates request', req.status === 201 && req.json.request.status === 'pending');
 const past = await call('/classes/requests', { method:'POST', token: amira.token, body:{
   teacherId: daniel.user.id, subject:'math', topic:'In the past',
@@ -222,6 +240,13 @@ await new Promise((resolve) => {
 
 const stored = await call(`/classes/sessions/${sessionId}/messages`, { token: daniel.token });
 ok('socket chat was written to postgres', stored.json.messages.some(m => m.text === 'Hello from the smoke test'));
+
+/* Release the class this suite booked. A cancelled class holds no slot, so
+   the next run gets the same free hour rather than inheriting a full diary. */
+if (sessionId) {
+  await call(`/classes/sessions/${sessionId}/cancel`, {
+    method: 'POST', token: owner.token, body: { reason: 'Test cleanup.' } });
+}
 
 console.log(`\n${pass} passed, ${fail} failed\n`);
 process.exit(fail ? 1 : 0);

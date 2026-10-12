@@ -104,15 +104,23 @@ function SessionActions({ session, as }: { session: ClassSession; as: Role }) {
       return;
     }
     setBusy(true);
-    const done = await store.run(
-      () => api.rescheduleSession(session.id, {
-        startsAt: new Date(when).toISOString(),
-        minutes: Number(data.get('minutes')),
-      }),
-      { title: 'Class moved', body: 'Everyone in it has been told the new time.' },
-    );
+    const done = await store.run(() => api.rescheduleSession(session.id, {
+      startsAt: new Date(when).toISOString(),
+      minutes: Number(data.get('minutes')),
+    }));
     setBusy(false);
-    if (done) setOpen(null);
+    if (!done) return;
+    setOpen(null);
+    /* Who the new time does not suit. The move was not blocked by it — one
+       full diary should not hold a group class hostage — so this is the only
+       place the teacher finds out, and they are the one who can act on it. */
+    if (done.studentClashes.length) {
+      store.toast('warn', 'Class moved, but not everyone can make it',
+        `${done.studentClashes.join(', ')} already ${done.studentClashes.length === 1 ? 'has' : 'have'} `
+        + 'a class at the new time. They can release their seat.');
+    } else {
+      store.toast('ok', 'Class moved', 'Everyone in it has been told the new time.');
+    }
   }
 
   return (

@@ -13,6 +13,7 @@ import { usersRouter } from './routes/users.js';
 import { libraryFilesRouter, libraryRouter } from './routes/library.js';
 import { announcementsRouter } from './routes/announcements.js';
 import { classesRouter } from './routes/classes.js';
+import { availabilityRouter } from './routes/availability.js';
 import { attendanceRouter } from './routes/attendance.js';
 import { payrollRouter } from './routes/payroll.js';
 import { billingRouter } from './routes/billing.js';
@@ -77,6 +78,7 @@ export function createApp() {
   app.use('/api/library', libraryRouter);
   app.use('/api/announcements', announcementsRouter);
   app.use('/api/classes', classesRouter);
+  app.use('/api/availability', availabilityRouter);
   app.use('/api/attendance', attendanceRouter);
   app.use('/api/payroll', payrollRouter);
   app.use('/api/billing', billingRouter);

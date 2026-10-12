@@ -9,7 +9,7 @@ import { RequestRow, TimelineItem, roomRoster } from '@/components/session-row';
 import {
   Button, Card, CardHead, Empty, Field, StatusPill, SubjectPill, Summary, Table, Td, Th,
 } from '@/components/ui';
-import type { ClassSession, Subject } from '@/lib/types';
+import type { ClassSession, Subject, TeacherHours } from '@/lib/types';
 
 /** Tomorrow at 16:00 local, formatted for a datetime-local input. */
 function defaultSlot(): string {
@@ -23,6 +23,11 @@ export default function ClassesPage() {
   const user = store.user;
   const [busy, setBusy] = useState(false);
   const [openClasses, setOpenClasses] = useState<ClassSession[]>([]);
+  /* The hours of whichever teacher the form is pointing at. A booking screen
+     that refuses a slot without having said which slots are allowed is a
+     guessing game, and the server refuses them in the teacher's timezone —
+     which is not the student's. */
+  const [hours, setHours] = useState<TeacherHours | null>(null);
 
   /* The open list is not part of the store's refresh: it is a different
      question from "my classes" — it is deliberately full of classes that are
@@ -35,6 +40,11 @@ export default function ClassesPage() {
   }, []);
 
   useEffect(() => { if (user) void loadOpen(); }, [user, loadOpen]);
+
+  const showHoursFor = useCallback((teacherId: string) => {
+    if (!teacherId) { setHours(null); return; }
+    void api.teacherHours(teacherId).then(setHours).catch(() => setHours(null));
+  }, []);
 
   const sessions = useMemo(
     () => [...store.sessions].sort(
@@ -51,6 +61,11 @@ export default function ClassesPage() {
   const past = sessions.filter((s) => s.status === 'completed' || s.status === 'no_show'
     || (s.status === 'cancelled' && !ahead(s))).reverse();
   const teachers = store.users.filter((u) => u.role === 'teacher' && u.status === 'active');
+  const firstTeacher = teachers[0]?.id ?? '';
+  // The select already defaults to the first teacher, so their hours are what
+  // the form is currently proposing to book against.
+  useEffect(() => { if (user?.role === 'student') showHoursFor(firstTeacher); },
+    [user?.role, firstTeacher, showHoursFor]);
   /* A parent used to fall into the student branch here, which was only ever a
      wording choice — until the row grew buttons, and it started offering them
      actions the server refuses. */
@@ -140,7 +155,8 @@ export default function ClassesPage() {
           <form className="flex flex-col gap-3.5 p-[18px]" onSubmit={createRequest}>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="Teacher">
-                <select name="teacherId" required>
+                <select name="teacherId" required id="request-teacher"
+                  onChange={(e) => showHoursFor(e.target.value)}>
                   {teachers.map((t) => (
                     <option key={t.id} value={t.id}>{t.name} — {t.subjects.join(', ')}</option>
                   ))}
@@ -172,6 +188,14 @@ export default function ClassesPage() {
             <Field label="Anything your teacher should prepare?">
               <textarea name="note" rows={2} placeholder="Optional" />
             </Field>
+            {hours ? (
+              <p className="-mt-1 text-[13px] text-ink-3" data-testid="teacher-hours">
+                {hours.open
+                  ? `${hours.teacherName.split(' ')[0]} has not set teaching hours, so any time can be asked for.`
+                  : `${hours.teacherName.split(' ')[0]} teaches ${hours.summary} — times in ${hours.timezone}. `
+                    + 'The whole class has to fit inside one of those spans.'}
+              </p>
+            ) : null}
             <div className="flex justify-end">
               <Button type="submit" variant="primary" disabled={busy}>Send request</Button>
             </div>

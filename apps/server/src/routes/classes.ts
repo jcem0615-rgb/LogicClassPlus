@@ -10,6 +10,10 @@ import {
   canCancel, canReadSession, canReschedule, isGroup, isInRoom, isShortNotice,
   seatsLeft, studentIdsOf, withSeats, type SessionWithSeats,
 } from '../lib/sessions.js';
+import {
+  availabilityProblem, clashesFor, clashError, windowsFor,
+  writeIntoFreeSlot, type Attendee,
+} from '../lib/scheduling.js';
 import { toCents } from '../lib/money.js';
 import { publicMessage, publicRequest, publicSession } from '../lib/serialize.js';
 import { actor, requireAuth, requireRole } from '../middleware/auth.js';
@@ -44,6 +48,47 @@ async function seatFilter(me: { id: string; role: string }): Promise<Prisma.Clas
   return { participants: { some: { studentId: { in: ids ?? [] } } } };
 }
 
+/* ---------------- is this slot actually free ----------------
+   Four routes hand a class a time, and a rule enforced in three of them is
+   worse than none: it teaches people to trust a guarantee the fourth quietly
+   breaks. Both checks live in `lib/scheduling.ts`; these two wrap them in the
+   words each caller needs. */
+
+/** Refuses a slot outside the teacher's declared hours. Silent if they have none. */
+async function assertWithinHours(
+  teacher: { id: string; name: string; timezone: string },
+  slot: { startsAt: Date; minutes: number },
+): Promise<void> {
+  const problem = availabilityProblem(teacher, slot, await windowsFor(teacher.id));
+  if (problem) throw badRequest(problem);
+}
+
+/**
+ * Refuses a slot this person is already committed to. `who` decides how much
+ * the message gives away: somebody is told what their own clash is, and told
+ * only that somebody else is busy — a student has no business reading another
+ * family's timetable out of an error message.
+ */
+async function assertFree(
+  person: { id: string; name: string; timezone: string },
+  slot: { startsAt: Date; minutes: number },
+  who: 'you' | 'them',
+  excludeSessionId?: string,
+): Promise<void> {
+  const clashes = await clashesFor({
+    userId: person.id,
+    slot,
+    ...(excludeSessionId ? { excludeSessionId } : {}),
+  });
+  if (!clashes.length) return;
+  throw clashError({ ...person, voice: who }, clashes[0]!);
+}
+
+/** The same person, as the booking helper wants them. */
+const attendee = (
+  person: { id: string; name: string; timezone: string }, voice: 'you' | 'them',
+): Attendee => ({ id: person.id, name: person.name, timezone: person.timezone, voice });
+
 /* ---------------- class requests ---------------- */
 classesRouter.get('/requests', asyncRoute(async (req, res) => {
   const me = actor(req);
@@ -75,6 +120,14 @@ classesRouter.post('/requests', requireRole('STUDENT'), validate(createRequest),
     if (!teacher || teacher.role !== 'TEACHER' || teacher.status !== 'ACTIVE') {
       throw notFound('That teacher is not available.');
     }
+
+    /* Checked when the slot is asked for, not only when it is accepted.
+       Sending a request into a slot the teacher cannot take means waiting a
+       day to be told no, and the answer was knowable immediately. */
+    const slot = { startsAt: input.requestedFor, minutes: input.minutes };
+    await assertWithinHours(teacher, slot);
+    await assertFree(teacher, slot, 'them');
+    await assertFree(me, slot, 'you');
 
     const request = await prisma.classRequest.create({
       data: {
@@ -116,20 +169,34 @@ classesRouter.patch('/requests/:id', requireRole('TEACHER'),
       return;
     }
 
-    // Accepting turns the request into a scheduled session in one transaction.
-    // The student who asked for it becomes its single seat.
-    const [updated, session] = await prisma.$transaction([
-      prisma.classRequest.update({ where: { id: request.id }, data: { status: 'ACCEPTED' } }),
-      prisma.classSession.create({
-        data: {
-          requestId: request.id, teacherId: request.teacherId,
-          subject: request.subject, topic: request.topic,
-          startsAt: request.requestedFor, minutes: request.minutes,
-          participants: { create: { studentId: request.studentId } },
-        },
-        include: withSeats,
-      }),
-    ]);
+    /* Re-checked at accept time: the request may have sat in the list for a
+       day, and the teacher may have filled that hour since. The student's own
+       diary too — they may have booked a group seat while waiting.
+
+       Hours are checked out here because they are configuration and do not
+       race; the clash check belongs inside the write, because it does. */
+    const slot = { startsAt: request.requestedFor, minutes: request.minutes };
+    await assertWithinHours(me, slot);
+    const asker = await prisma.user.findUniqueOrThrow({ where: { id: request.studentId } });
+
+    // Accepting turns the request into a scheduled session. The student who
+    // asked for it becomes its single seat.
+    const [updated, session] = await writeIntoFreeSlot({
+      slot,
+      mustBeFree: [attendee(me, 'you'), attendee(asker, 'them')],
+      write: (tx) => Promise.all([
+        tx.classRequest.update({ where: { id: request.id }, data: { status: 'ACCEPTED' } }),
+        tx.classSession.create({
+          data: {
+            requestId: request.id, teacherId: request.teacherId,
+            subject: request.subject, topic: request.topic,
+            startsAt: request.requestedFor, minutes: request.minutes,
+            participants: { create: { studentId: request.studentId } },
+          },
+          include: withSeats,
+        }),
+      ]),
+    });
 
     await notify({
       userId: request.studentId, type: 'session', title: 'Class accepted',
@@ -463,14 +530,36 @@ classesRouter.patch('/sessions/:id/schedule', validate(rescheduleInput),
         + 'rewrite their timesheet. Cancel it and open a new one.');
     }
 
+    const slot = { startsAt: input.startsAt, minutes };
+    const giver = await prisma.user.findUniqueOrThrow({ where: { id: session.teacherId } });
+    await assertWithinHours(giver, slot);
+
+    /* Students are reported, not refused. Blocking a move because one of six
+       people in a group class is busy that evening would hold the class
+       hostage to the person with the fullest diary; they can release their
+       seat. The teacher is told who, so the decision is an informed one. */
+    const studentClashes: string[] = [];
+    for (const studentId of studentIdsOf(session)) {
+      const student = await prisma.user.findUnique({ where: { id: studentId } });
+      if (!student) continue;
+      const clashes = await clashesFor({ userId: studentId, slot, excludeSessionId: session.id });
+      if (clashes.length) studentClashes.push(student.name);
+    }
+
     const from = session.startsAt;
-    const updated = await prisma.classSession.update({
-      where: { id: session.id },
-      data: {
-        startsAt: input.startsAt, minutes,
-        rescheduledFrom: from, rescheduledAt: new Date(),
-      },
-      include: withSeats,
+    const updated = await writeIntoFreeSlot({
+      slot,
+      mustBeFree: [attendee(giver, me.id === giver.id ? 'you' : 'them')],
+      // The class being moved obviously overlaps where it already is.
+      excludeSessionId: session.id,
+      write: (tx) => tx.classSession.update({
+        where: { id: session.id },
+        data: {
+          startsAt: input.startsAt, minutes,
+          rescheduledFrom: from, rescheduledAt: new Date(),
+        },
+        include: withSeats,
+      }),
     });
 
     /* Students are told; a group class is not re-opened for booking, because
@@ -494,7 +583,7 @@ classesRouter.patch('/sessions/:id/schedule', validate(rescheduleInput),
     emitToSession(session.id, 'classroom:state', publicSession(updated));
     for (const id of tellIds) emitToUser(id, 'classroom:moved', publicSession(updated));
 
-    res.json({ session: publicSession(updated) });
+    res.json({ session: publicSession(updated), studentClashes });
   }));
 
 /* ---------------- group classes ----------------
@@ -523,14 +612,21 @@ classesRouter.post('/group', requireRole('TEACHER', 'OWNER'), validate(openClass
     const input = req.body as z.infer<typeof openClass>;
     if (input.startsAt.getTime() < Date.now()) throw badRequest('Open the class for a future slot.');
 
-    const session = await prisma.classSession.create({
-      data: {
-        teacherId: me.id,
-        subject: input.subject === 'math' ? 'MATH' : 'ENGLISH',
-        topic: input.topic, startsAt: input.startsAt, minutes: input.minutes,
-        capacity: input.capacity, seatPriceCents: toCents(input.seatPrice),
-      },
-      include: withSeats,
+    const slot = { startsAt: input.startsAt, minutes: input.minutes };
+    await assertWithinHours(me, slot);
+
+    const session = await writeIntoFreeSlot({
+      slot,
+      mustBeFree: [attendee(me, 'you')],
+      write: (tx) => tx.classSession.create({
+        data: {
+          teacherId: me.id,
+          subject: input.subject === 'math' ? 'MATH' : 'ENGLISH',
+          topic: input.topic, startsAt: input.startsAt, minutes: input.minutes,
+          capacity: input.capacity, seatPriceCents: toCents(input.seatPrice),
+        },
+        include: withSeats,
+      }),
     });
 
     res.status(201).json({ session: publicSession(session) });
@@ -570,22 +666,23 @@ classesRouter.post('/sessions/:id/book', requireRole('STUDENT'), asyncRoute(asyn
   }
   if (seatsLeft(session) < 1) throw badRequest('That class is full.');
 
-  /* The check above and the insert below are not one operation, so two
-     students taking the last seat at the same moment would both pass it. The
-     unique index on (sessionId, studentId) does not help — they are different
-     students. Counting inside the transaction and failing there does. */
-  try {
-    await prisma.$transaction(async (tx) => {
+  /* Two things have to hold while the seat is written, and neither check is
+     one operation with the insert: the class must still have room — two
+     students taking the last seat at once both passed the count above, and
+     the unique index on (sessionId, studentId) does not help because they are
+     different students — and the student must still be free, because a seat
+     is as much of a commitment as a private lesson, and taking one on top of
+     a class they already have is how somebody ends up a no-show in an
+     attendance record. Both inside one serializable transaction. */
+  await writeIntoFreeSlot({
+    slot: { startsAt: session.startsAt, minutes: session.minutes },
+    mustBeFree: [attendee(me, 'you')],
+    write: async (tx) => {
       const taken = await tx.sessionParticipant.count({ where: { sessionId: session.id } });
       if (taken >= session.capacity) throw badRequest('That class is full.');
       await tx.sessionParticipant.create({ data: { sessionId: session.id, studentId: me.id } });
-    }, { isolationLevel: 'Serializable' });
-  } catch (err) {
-    // Serializable conflicts surface as a write conflict, which in this
-    // transaction can only mean the other booking won the race.
-    if ((err as { code?: string }).code === 'P2034') throw badRequest('That class is full.');
-    throw err;
-  }
+    },
+  });
 
   const updated = await prisma.classSession.findUniqueOrThrow({
     where: { id: session.id }, include: withSeats,

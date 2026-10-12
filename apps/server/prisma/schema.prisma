@@ -116,6 +116,7 @@ model User {
   invitedBy         Invitation?            @relation("InviteAccepted")
   children          Guardian[]             @relation("GuardianParent")
   guardians         Guardian[]             @relation("GuardianStudent")
+  availability      Availability[]         @relation("TeacherAvailability")
 
   @@index([role, status])
 }
@@ -280,6 +281,28 @@ model ClassSession {
 /// One student's seat in a class. The row existing is the booking; `joinedAt`
 /// is stamped the first time they actually enter the room, which is how a
 /// group class tells who turned up from who merely booked.
+/// When a teacher is willing to teach, in their own timezone.
+///
+/// A teacher with no windows at all counts as available whenever, which is the
+/// only safe default: anything else would have closed every existing teacher's
+/// calendar the moment this table appeared.
+model Availability {
+  id          String   @id @default(cuid())
+  teacherId   String
+  /// 0 = Sunday ... 6 = Saturday, read in the teacher's own timezone — the
+  /// weekday of an instant depends on where you are standing.
+  weekday     Int
+  /// Minutes from local midnight, so 9am is 540 and 17:30 is 1050. Minutes
+  /// rather than a time string: comparing two integers has no parsing in it.
+  startMinute Int
+  endMinute   Int
+  createdAt   DateTime @default(now())
+
+  teacher User @relation("TeacherAvailability", fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@index([teacherId, weekday])
+}
+
 model SessionParticipant {
   id        String    @id @default(cuid())
   sessionId String

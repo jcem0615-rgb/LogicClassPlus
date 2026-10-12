@@ -6,9 +6,11 @@
  * header keeps CSRF off the table entirely.
  */
 import type {
-  Announcement, Assessment, AttendanceRow, ChatMessage, ClassRequest, ClassSession,
-  Folder, Health, Invitation, Invoice, Notification, PayrollBatch, PayrollLine, PayrollPolicy,
-  RecordingEstimate, ResetRequest, Resource, SfuCredentials, SpeechStatus, Subject, User,
+  Announcement, Assessment, AttendanceRow, AvailabilityWindow, ChatMessage,
+  ClassRequest, ClassSession, Folder, Health, Invitation, Invoice,
+  Notification, PayrollBatch, PayrollLine, PayrollPolicy, RecordingEstimate,
+  ResetRequest, Resource, SfuCredentials, SpeechStatus, Subject,
+  TeacherHours, User
 } from './types';
 
 const TOKEN_KEY = 'logicclass.token';
@@ -241,10 +243,22 @@ export const api = {
       session: ClassSession; shortNotice: boolean;
       invoicedLines: number; teacherClockedIn: boolean;
     }>(`/classes/sessions/${id}/cancel`, reason ? { reason } : {}),
+  /* `studentClashes` names anyone in the class who is now busy at the new
+     time. The move is not blocked by it — holding a group class hostage to the
+     fullest diary in it would be wrong — so the teacher is told instead. */
   rescheduleSession: (id: string, input: { startsAt: string; minutes?: number }) =>
-    patch<{ session: ClassSession }>(`/classes/sessions/${id}/schedule`, input),
+    patch<{ session: ClassSession; studentClashes: string[] }>(
+      `/classes/sessions/${id}/schedule`, input),
+
   withdrawRequest: (id: string) =>
     del<{ request: ClassRequest }>(`/classes/requests/${id}`),
+
+  /* teaching hours */
+  teacherHours: (teacherId: string) => get<TeacherHours>(`/availability/${teacherId}`),
+  saveTeacherHours: (teacherId: string, windows: AvailabilityWindow[]) =>
+    put<TeacherHours>(`/availability/${teacherId}`, {
+      windows: windows.map((w) => ({ weekday: w.weekday, start: w.start, end: w.end })),
+    }),
   saveDocument: (id: string, kind: 'board' | 'document' | 'equation' | 'annotation', content: string) =>
     put<{ kind: string; updatedAt: string }>(`/classes/sessions/${id}/documents`, { kind, content }),
   sendMessage: (id: string, text: string) =>
